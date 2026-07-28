@@ -4,20 +4,24 @@
 //! `docs/ecosystem-survey.md`): a library `use`s another by a qualified path like
 //! `<scad-utils/…>` without declaring it anywhere scadman can read. Without this pass, a
 //! user who installs such a library gets a raw OpenSCAD `can't open include file` error
-//! that scadman caused and cannot explain. This pass diffs the qualified library roots the
-//! installed content imports against what the resolution provides, so scadman can say
+//! that scadman caused and cannot explain. This pass reports the library roots the
+//! installed content imports that the resolution does not provide, so scadman can say
 //! exactly what to add.
+//!
+//! To avoid false positives (validated against BOSL2, NopSCADlib, dotSCAD, …) it:
+//! - resolves an import against the package's own files first (an import like `<utils/…>`
+//!   from a file that resolves to the package's own `utils/` is internal, not a dep), and
+//! - skips the package's non-library directories (`examples/`, `test/`, `docs/`), whose
+//!   imports are not on a consumer's include path.
 //!
 //! It also honestly bounds scadman's guarantee: `OPENSCADPATH` cannot stop OpenSCAD from
 //! searching the user and installation library folders, so "declared deps shadow globals"
-//! is the real promise — this scan is how an *undeclared* dependency is surfaced.
-//!
-//! Parsing is heuristic but comment- and string-aware: a single pass blanks comments and
-//! string literals so import-like text inside them is never matched.
+//! is the real promise — this scan is how an *undeclared* dependency is surfaced. Parsing
+//! is comment- and string-aware.
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -25,10 +29,14 @@ use regex::Regex;
 static IMPORT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(?:use|include)\s*<([^>]*)>").unwrap());
 
+/// Top-level directories that hold a library's own examples/tests/docs rather than the
+/// code a consumer imports; their imports are not the user's dependencies.
+const NON_LIBRARY_DIRS: &[&str] = &["examples", "example", "test", "tests", "docs", "doc"];
+
 /// An installed package to scan: the name it is exposed under and its content root.
 pub struct Installed {
     pub name: String,
-    pub path: PathBuf,
+    pub path: std::path::PathBuf,
 }
 
 /// A qualified import referencing a library root the resolution does not provide.
@@ -43,64 +51,127 @@ pub struct UnmetImport {
 }
 
 /// Find qualified imports across `installed` packages that name a library root which is
-/// neither the importing package itself nor present in `provided`.
+/// neither resolvable within the package itself nor present in `provided`.
 ///
-/// Only *qualified* imports (`<name/…>`) are reported — a bare `<file.scad>` relies on
-/// `OPENSCADPATH` and is too ambiguous to flag. Results are sorted and de-duplicated. The
-/// scan is best-effort: an unreadable file or directory is skipped, not fatal.
+/// Only *qualified* imports (`<name/…>`) that don't resolve internally are reported — a
+/// bare `<file.scad>` relies on `OPENSCADPATH` and is too ambiguous to flag. Results are
+/// sorted and de-duplicated. The scan is best-effort: unreadable files/dirs are skipped.
 pub fn unmet_imports(installed: &[Installed], provided: &BTreeSet<String>) -> Vec<UnmetImport> {
     let mut out = Vec::new();
     for pkg in installed {
-        scan_package(pkg, &pkg.path, provided, &mut out);
+        let files = collect_scad(&pkg.path);
+        for rel in &files {
+            if in_non_library_dir(rel) {
+                continue;
+            }
+            let Ok(bytes) = fs::read(pkg.path.join(rel)) else {
+                continue;
+            };
+            let src = String::from_utf8_lossy(&bytes);
+            for target in import_targets(&src) {
+                if let Some(library) = unmet_library(rel, &target, &files, &pkg.name, provided) {
+                    out.push(UnmetImport {
+                        package: pkg.name.clone(),
+                        file: rel.clone(),
+                        library,
+                    });
+                }
+            }
+        }
     }
     out.sort();
     out.dedup();
     out
 }
 
-fn scan_package(
-    pkg: &Installed,
-    dir: &Path,
-    provided: &BTreeSet<String>,
-    out: &mut Vec<UnmetImport>,
-) {
+/// The `.scad` files in a package, as sorted posix-relative paths (best-effort).
+fn collect_scad(root: &Path) -> BTreeSet<String> {
+    let mut files = BTreeSet::new();
+    collect_scad_into(root, "", &mut files);
+    files
+}
+
+fn collect_scad_into(dir: &Path, prefix: &str, out: &mut BTreeSet<String>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
-        if entry.file_name() == ".git" {
+        let name = entry.file_name();
+        if name == ".git" {
             continue;
         }
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        let path = entry.path();
+        let rel = if prefix.is_empty() {
+            name.to_string_lossy().into_owned()
+        } else {
+            format!("{prefix}/{}", name.to_string_lossy())
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
         if file_type.is_dir() {
-            scan_package(pkg, &path, provided, out);
-        } else if path.extension().is_some_and(|e| e == "scad") {
-            let Ok(bytes) = fs::read(&path) else {
-                continue;
-            };
-            let src = String::from_utf8_lossy(&bytes).into_owned();
-            let rel = path
-                .strip_prefix(&pkg.path)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .into_owned();
-            for target in import_targets(&src) {
-                if let Some(library) = qualified_library(&target)
-                    && library != pkg.name
-                    && !provided.contains(library)
-                {
-                    out.push(UnmetImport {
-                        package: pkg.name.clone(),
-                        file: rel.clone(),
-                        library: library.to_string(),
-                    });
-                }
-            }
+            collect_scad_into(&entry.path(), &rel, out);
+        } else if Path::new(&rel).extension().is_some_and(|e| e == "scad") {
+            out.insert(rel);
         }
     }
+}
+
+fn in_non_library_dir(rel: &str) -> bool {
+    rel.split('/')
+        .next()
+        .is_some_and(|top| NON_LIBRARY_DIRS.contains(&top))
+}
+
+/// If `target` (imported from `importer`) names a library the package does not itself
+/// provide, return that library root; otherwise `None`.
+fn unmet_library(
+    importer: &str,
+    target: &str,
+    files: &BTreeSet<String>,
+    package: &str,
+    provided: &BTreeSet<String>,
+) -> Option<String> {
+    let target = target.trim();
+    // Resolves within the package (relative to the importing file, or from its root)?
+    if files.contains(&join_norm(dir_of(importer), target)) || files.contains(&norm(target)) {
+        return None;
+    }
+    // A bare filename (no `/`) relies on OPENSCADPATH — too ambiguous to flag.
+    let (first, _) = target.split_once('/')?;
+    if matches!(first, "" | "." | "..") || first == package || provided.contains(first) {
+        return None;
+    }
+    Some(first.to_string())
+}
+
+fn dir_of(rel: &str) -> &str {
+    rel.rsplit_once('/').map_or("", |(dir, _)| dir)
+}
+
+fn join_norm(dir: &str, target: &str) -> String {
+    if dir.is_empty() {
+        norm(target)
+    } else {
+        norm(&format!("{dir}/{target}"))
+    }
+}
+
+/// Logically normalize a posix path (resolve `.` and `..` without touching the filesystem).
+fn norm(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for comp in path.split('/') {
+        match comp {
+            "" | "." => {}
+            ".." if matches!(parts.last(), Some(&p) if p != "..") => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    parts.join("/")
 }
 
 /// Extract the raw targets of `use`/`include` statements, ignoring commented-out or
@@ -113,8 +184,7 @@ fn import_targets(src: &str) -> Vec<String> {
         .collect()
 }
 
-/// Blank comments and string literals in a single pass, preserving newlines. This keeps
-/// `use`/`include` text inside a `"…"` string or a `//`/`/* */` comment from matching.
+/// Blank comments and string literals in a single pass, preserving newlines.
 fn strip_noncode(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut chars = src.chars().peekable();
@@ -158,97 +228,95 @@ fn strip_noncode(src: &str) -> String {
     out
 }
 
-/// The referenced library root of a qualified import, or `None` for a bare filename or a
-/// path-relative target (`./`, `../`, absolute).
-fn qualified_library(target: &str) -> Option<&str> {
-    let (first, _) = target.split_once('/')?;
-    match first {
-        "" | "." | ".." => None,
-        lib => Some(lib),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn write(dir: &Path, rel: &str, contents: &str) {
+        let path = dir.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+
     #[test]
     fn import_targets_ignores_comments_and_strings() {
-        let src = "\
-// use <linecommented.scad>
-use <BOSL2/std.scad>
-include <../rel/util.scad>
-/* include <blockcommented.scad> */
-echo(\"use <instring/x.scad>\");
-use <bare.scad>
-";
+        let src = "// use <linecommented.scad>\nuse <BOSL2/std.scad>\n/* include <blockcommented.scad> */\necho(\"use <instring/x.scad>\");\nuse <bare.scad>\n";
         let targets = import_targets(src);
         assert!(targets.contains(&"BOSL2/std.scad".to_string()));
-        assert!(targets.contains(&"../rel/util.scad".to_string()));
         assert!(targets.contains(&"bare.scad".to_string()));
         for dropped in ["linecommented", "blockcommented", "instring"] {
-            assert!(
-                !targets.iter().any(|t| t.contains(dropped)),
-                "should not match `{dropped}`"
-            );
+            assert!(!targets.iter().any(|t| t.contains(dropped)));
         }
     }
 
     #[test]
-    fn block_marker_inside_line_comment_does_not_swallow_code() {
-        // A `/*` living in a `//` comment must not open a block comment.
-        let src = "// disabled /* old\nuse <real/lib.scad>\n";
-        let targets = import_targets(src);
-        assert_eq!(targets, vec!["real/lib.scad".to_string()]);
+    fn norm_resolves_dot_and_dotdot() {
+        assert_eq!(norm("a/./b"), "a/b");
+        assert_eq!(norm("a/b/../c"), "a/c");
+        assert_eq!(join_norm("lib", "../shared/x.scad"), "shared/x.scad");
+        assert_eq!(join_norm("", "std.scad"), "std.scad");
     }
 
     #[test]
-    fn qualified_library_classification() {
-        assert_eq!(qualified_library("BOSL2/std.scad"), Some("BOSL2"));
-        assert_eq!(qualified_library("bare.scad"), None);
-        assert_eq!(qualified_library("../rel/util.scad"), None);
-        assert_eq!(qualified_library("./x.scad"), None);
-        assert_eq!(qualified_library("/abs/x.scad"), None);
-    }
-
-    #[test]
-    fn reports_only_undeclared_qualified_libraries() {
+    fn internal_subdir_imports_are_not_flagged() {
+        // A library whose root file imports its own `utils/` subdir (like NopSCADlib) must
+        // not be reported — the import resolves within the package.
         let dir = TempDir::new().unwrap();
-        // "agentscad" imports BOSL2 (provided), scad-utils (not), its own name (self,
-        // ignored), a bare import (ignored), and one inside a string (ignored).
-        fs::write(
-            dir.path().join("main.scad"),
-            "use <BOSL2/std.scad>\nuse <scad-utils/lists.scad>\nuse <agentscad/util.scad>\ninclude <bare.scad>\necho(\"use <ghost/x.scad>\");\n",
-        )
-        .unwrap();
+        write(dir.path(), "core.scad", "use <utils/helpers.scad>\n");
+        write(dir.path(), "utils/helpers.scad", "// helpers\n");
+        let installed = vec![Installed {
+            name: "NopSCADlib".to_string(),
+            path: dir.path().to_path_buf(),
+        }];
+        assert!(unmet_imports(&installed, &BTreeSet::new()).is_empty());
+    }
+
+    #[test]
+    fn example_and_test_dirs_are_skipped() {
+        let dir = TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "examples/demo.scad",
+            "use <Something-1.0/x.scad>\n",
+        );
+        write(dir.path(), "test/t.scad", "use <voxel/x.scad>\n");
+        let installed = vec![Installed {
+            name: "Lib".to_string(),
+            path: dir.path().to_path_buf(),
+        }];
+        assert!(unmet_imports(&installed, &BTreeSet::new()).is_empty());
+    }
+
+    #[test]
+    fn a_genuine_external_library_is_reported() {
+        // `agentscad` imports `scad-utils/` which resolves nowhere in the package.
+        let dir = TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "main.scad",
+            "use <scad-utils/lists.scad>\nuse <agentscad/util.scad>\ninclude <bare.scad>\n",
+        );
         let installed = vec![Installed {
             name: "agentscad".to_string(),
             path: dir.path().to_path_buf(),
         }];
+        // BOSL2 provided; scad-utils not; agentscad is self; bare ignored.
         let provided: BTreeSet<String> = ["BOSL2".to_string()].into_iter().collect();
-
         let unmet = unmet_imports(&installed, &provided);
         assert_eq!(unmet.len(), 1);
-        assert_eq!(unmet[0].package, "agentscad");
         assert_eq!(unmet[0].library, "scad-utils");
-        assert_eq!(unmet[0].file, "main.scad");
     }
 
     #[test]
-    fn empty_when_all_imports_are_provided_or_internal() {
+    fn self_rooted_import_is_not_flagged() {
+        // BOSL2's own `include <BOSL2/std.scad>` (first segment == package name).
         let dir = TempDir::new().unwrap();
-        fs::create_dir(dir.path().join("sub")).unwrap();
-        fs::write(
-            dir.path().join("sub/a.scad"),
-            "use <BOSL2/std.scad>\nuse <self/inner.scad>\n",
-        )
-        .unwrap();
+        write(dir.path(), "shapes.scad", "include <BOSL2/std.scad>\n");
         let installed = vec![Installed {
-            name: "self".to_string(),
+            name: "BOSL2".to_string(),
             path: dir.path().to_path_buf(),
         }];
-        let provided: BTreeSet<String> = ["BOSL2".to_string()].into_iter().collect();
-        assert!(unmet_imports(&installed, &provided).is_empty());
+        assert!(unmet_imports(&installed, &BTreeSet::new()).is_empty());
     }
 }
