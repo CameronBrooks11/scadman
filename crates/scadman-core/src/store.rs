@@ -126,8 +126,14 @@ fn collect_files(base: &Path, rel: PathBuf, out: &mut Vec<PathBuf>) -> io::Resul
         if name == ".git" {
             continue;
         }
+        let file_type = entry.file_type()?;
+        // Skip symlinks: following them into the store would let a link like
+        // `evil -> /etc/passwd` pull host content into an entry later exposed to OpenSCAD.
+        if file_type.is_symlink() {
+            continue;
+        }
         let child = rel.join(&name);
-        if entry.file_type()?.is_dir() {
+        if file_type.is_dir() {
             collect_files(base, child, out)?;
         } else {
             out.push(child);
@@ -144,9 +150,13 @@ fn copy_tree(src: &Path, dest: &Path) -> io::Result<()> {
         if name == ".git" {
             continue;
         }
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue; // never copy symlinks into the store (see collect_files)
+        }
         let from = entry.path();
         let to = dest.join(&name);
-        if entry.file_type()?.is_dir() {
+        if file_type.is_dir() {
             copy_tree(&from, &to)?;
         } else {
             fs::copy(&from, &to)?;
@@ -230,5 +240,29 @@ mod tests {
 
         let second = store.insert(src.path()).unwrap();
         assert_eq!(first, second); // same hash + path, no error
+    }
+
+    #[test]
+    fn symlinks_are_skipped_not_followed() {
+        let external = tempfile::tempdir().unwrap();
+        fs::write(external.path().join("secret"), "host-only").unwrap();
+
+        let src = tempfile::tempdir().unwrap();
+        write(src.path(), "std.scad", "x=1;");
+        std::os::unix::fs::symlink(external.path().join("secret"), src.path().join("leak"))
+            .unwrap();
+
+        // The symlink neither appears in the store nor perturbs the hash.
+        let plain = tempfile::tempdir().unwrap();
+        write(plain.path(), "std.scad", "x=1;");
+        assert_eq!(
+            content_hash(src.path()).unwrap(),
+            content_hash(plain.path()).unwrap()
+        );
+
+        let store_root = tempfile::tempdir().unwrap();
+        let entry = Store::new(store_root.path()).insert(src.path()).unwrap();
+        assert!(entry.path.join("std.scad").exists());
+        assert!(!entry.path.join("leak").exists());
     }
 }
