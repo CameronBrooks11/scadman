@@ -1,59 +1,49 @@
 # Roadmap
 
-scadman reached an end-to-end v1 (`init → add → lock → sync → run`). This roadmap comes
-from a codebase audit and an OpenSCAD-integration research pass; it prioritizes the work
-to reach a *dependable* v1 and then extend outward. Sizes are rough (XS/S/M).
+scadman is usable end-to-end (`init · add · remove · list · lock · sync · run · env`),
+hardened, and CI-green. This roadmap reflects that and prioritizes what makes it
+*trustworthy and shareable* next. Sizes are rough (XS/S/M).
 
-## Track A — dependability shore-ups (do first)
+## Done
 
-The audit found the architecture sound and the distance to dependable "small and concrete":
-input validation at two trust boundaries, one real bug, and the integration test that
-would have caught it. Do these before new surface area.
+- **v1 core** — manifest, lockfile, content-addressed store, git acquisition,
+  collect-and-unify resolver, post-install include-scan, environment builder, and the
+  CLI. Design grounded in the ecosystem survey ([ecosystem-survey.md](ecosystem-survey.md),
+  [resolver-direction.md](resolver-direction.md)); decisions in [DECISIONS.md](DECISIONS.md).
+- **Track A — dependability shore-ups** (#15–#18): package-name validation at every
+  filesystem chokepoint (path-traversal, PoC-verified), stale-lock detection, lockfile
+  version check, and end-to-end integration tests.
+- **Track B — CLI rounding-out**: `remove`, `list`, and a `.scadman/` gitignore in `init`.
+- **Track C1 — `scadman env` (+ `--json`)**: the OPENSCADPATH / machine-readable report
+  that openscad-LSP and preview extensions consume to resolve against pinned versions.
 
-- **[A1] Validate package names as safe path segments** — [#15] · S · **security**.
-  A transitive `scadman.toml` could key `../../foo` → an env symlink escapes `.scadman/env/`.
-- **[A2] Detect stale/out-of-date lockfile in `sync`/`run`** — [#16] · S–M · **real bug**.
-  `add` then `run` silently ignores the new dependency today.
-- **[A3] Validate lockfile `version` on read** — [#17] · XS. Reject unknown/newer formats.
-- **[A4] End-to-end integration test** (`lock → sync`, integrity-mismatch, stale-lock) — [#18] · M.
-  The CLI seam currently has zero coverage.
+## Next (near-term)
 
-## Track B — CLI rounding-out (quick, high user value)
+1. **Validate against the real ecosystem** — [#21] · S–M · **top priority**. scadman has
+   only run against synthetic `file://` repos; prove it against the five archetype fixtures
+   (BOSL2 self-rooted, dotSCAD bare-import/src-layout, NopSCADlib scale, MCAD bundled,
+   Round-Anything) plus a real diamond/conflict. De-risks the whole design; leaves a
+   repeatable validation behind.
+2. **First alpha release** — [#22] · S. Tag `v0.1.0-alpha`, document install, optionally a
+   CI release binary. Ship something *proven* (do after #21).
 
-- **[B1]** `.scadman/` gitignore scaffolding in `init` — XS. Users otherwise commit
-  machine-local symlinks.
-- **[B2]** `scadman remove` — S · **[B3]** `scadman list` — S. Table-stakes for a manager.
+## Open decisions
 
-## Track C — OpenSCAD / editor integration
+- **Dead `project.openscad` field** — [#23]. Wire a minimal OpenSCAD-version check or drop
+  it from the schema so it stops promising nothing.
 
-Research reordered this: the three JSON outputs the direction doc bundled have very
-different value.
+## Deferred / blocked
 
-- **[C1] `scadman env` (+ `--json`)** — S · **highest-leverage next feature.** It's the
-  *only* output today's ecosystem consumes for free: point openscad-LSP (`OPENSCADPATH`
-  or `scad-lsp.searchPaths`) and the OpenSCAD binary/preview extension at scadman's env
-  dir → goto-def / completion / preview resolve against *pinned* versions, zero code on
-  either side. It's a thin serialization of the `Environment` + `Lockfile` structs.
-- **[C2]** editor-wiring recipe (docs; optional `--write-vscode`) — XS docs / S writer.
-- **Fold in** `graph --json` with C1 if wanted (near-zero cost; internal/CI value only).
-- **Defer** `symbols --json` — no consumer exists and it needs a net-new definition scanner.
-- **Blocked upstream** — GUI/native integration. OpenSCAD's library-path-injection patch
-  is unmerged and stalled; `OPENSCADPATH` is the *only* hook, so scadman owns injection
+- **`graph --json`** — near-zero cost to fold into `env`, but internal/CI value only; do
+  when a consumer appears.
+- **`symbols --json`** — no consumer exists and it needs a net-new definition scanner.
+- **Editor-wiring writer** (`--write-vscode`) / a `doctor` command — UX polish.
+- **GUI / native-core integration** — upstream-blocked: OpenSCAD's library-path-injection
+  patch is unmerged and stalled, `OPENSCADPATH` is the only hook, so scadman owns injection
   indefinitely. Do not scope anything that needs OpenSCAD to meet us halfway.
+- **Registry / hosted index** — after v1 proves out. Org names are reserved; don't get ahead.
 
-## Product decisions surfaced
+## Corrections carried in the code
 
-- **`OPENSCADPATH` does not isolate.** It *adds* to the search path; OpenSCAD always also
-  searches its built-in user/install dirs. The honest guarantee is "declared deps
-  **shadow** globals" (the include-scan is the mitigation). The overclaiming comment in
-  `scadman-cli/src/main.rs` is corrected as part of Track A.
-- **Dead `project.openscad` field** — parsed but never used; it silently promises version
-  checking scadman doesn't do. Decide: wire a minimal OpenSCAD-version check, or drop the
-  field from the schema. Deferred, tracked here.
-
-## Recommended sequence
-
-**A → then (B + C1) together.** Harden the trust boundaries and kill the stale-lock bug
-first (correctness/security), then land the quick CLI wins alongside `scadman env` — the
-single highest-leverage feature, which unlocks editor integration essentially for free.
-`symbols --json`, GUI, and native-core integration stay deferred.
+- `OPENSCADPATH` *shadows* globally-installed libraries, it does not hide them (OpenSCAD
+  always also searches its built-in user/install dirs; the include-scan is the mitigation).
