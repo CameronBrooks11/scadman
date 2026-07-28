@@ -276,3 +276,38 @@ fn env_reports_path_and_json() {
         "env --json: {text}"
     );
 }
+
+/// Real-ecosystem validation (#21): fetch BOSL2 at a pinned rev and render a model that
+/// `include`s it end-to-end. Requires network access and `openscad` on PATH, so it is
+/// ignored by default — run with `cargo test -- --ignored`.
+#[test]
+#[ignore = "needs network + openscad; real-ecosystem validation"]
+fn bosl2_renders_end_to_end() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = project_with(
+        root.path(),
+        "[project]\nname = \"v\"\n\n[dependencies]\nBOSL2 = { git = \"https://github.com/BelfrySCAD/BOSL2\", rev = \"afe82db884ee4409aa76ecfcfbbf54d446964af1\" }\n",
+    );
+    fs::write(
+        proj.join("model.scad"),
+        "include <BOSL2/std.scad>\ncuboid([10, 20, 30], rounding = 3);\n",
+    )
+    .unwrap();
+
+    assert!(
+        scadman(&proj, store.path(), &["lock"]).status.success(),
+        "lock BOSL2"
+    );
+    let run = scadman(
+        &proj,
+        store.path(),
+        &["run", "--", "-o", "out.stl", "model.scad"],
+    );
+    assert!(
+        run.status.success(),
+        "render: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(proj.join("out.stl").exists(), "BOSL2 should render an STL");
+}
