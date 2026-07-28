@@ -1,0 +1,75 @@
+# Archetype fixtures for scadman — real libraries pinned to exact revisions.
+#
+# Not vendored: tests fetch each repo at `rev` on demand. Measured fields are from the
+# pass-1 ecosystem survey (see ../docs/ecosystem-survey.md) at the pinned revision, and
+# are descriptive snapshots — not a contract.
+
+[[fixture]]
+name = "BOSL2"
+repo = "https://github.com/BelfrySCAD/BOSL2"
+rev = "afe82db884ee4409aa76ecfcfbbf54d446964af1"
+archetype = "framework"
+role = "large flat namespace; self-rooted includes (`include <BOSL2/std.scad>`)"
+license = "BSD-2-Clause"
+layout = "nested"
+tags = 31
+scad_files = 67
+modules = 433
+functions = 1369
+self_rooted = true
+
+[[fixture]]
+name = "NopSCADlib"
+repo = "https://github.com/nophead/NopSCADlib"
+rev = "c9baa0ed0faa23e849141c3d8c6728545d6af910"
+archetype = "framework-catalog"
+role = "component catalog; heavily released; self-rooted includes"
+license = "GPL-3.0"
+layout = "nested"
+tags = 438
+scad_files = 389
+modules = 994
+functions = 1574
+self_rooted = true
+
+[[fixture]]
+name = "MCAD"
+repo = "https://github.com/openscad/MCAD"
+rev = "bd0a7ba3f042bfbced5ca1894b236cea08904e26"
+archetype = "conventional-library"
+role = "bundled with OpenSCAD; unlicensed; barely released; self-rooted"
+license = ""
+layout = "nested"
+tags = 2
+scad_files = 42
+modules = 180
+functions = 37
+self_rooted = true
+
+[[fixture]]
+name = "dotSCAD"
+repo = "https://github.com/JustinSDK/dotSCAD"
+rev = "bb33edfd75cba0edbb7971606a077b9c69d0b7d2"
+archetype = "src-layout"
+role = "large src/ layout; relies on bare OPENSCADPATH-resolved imports"
+license = "LGPL-3.0"
+layout = "src-layout"
+tags = 22
+scad_files = 695
+modules = 709
+functions = 1005
+self_rooted = false
+
+[[fixture]]
+name = "Round-Anything"
+repo = "https://github.com/Irev-Dev/Round-Anything"
+rev = "061fef7c429628808e847696bb345a9b0ec6e279"
+archetype = "utility"
+role = "small focused utility; most edges reference an external library"
+license = "MIT"
+layout = "nested"
+tags = 6
+scad_files = 16
+modules = 31
+functions = 46
+self_rooted = false
