@@ -14,5 +14,6 @@ toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 sha2 = "0.10"
+regex = "1"
 tempfile = "3"
 scadman-core = { path = "crates/scadman-core" }
