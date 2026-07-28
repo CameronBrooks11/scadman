@@ -29,7 +29,9 @@ pub struct LockedPackage {
     pub source: String,
     /// Exact resolved revision (a Git commit SHA for Git sources).
     pub rev: String,
-    /// Content hash of the stored package tree — the [`crate::store`] key.
+    /// Content hash of the stored package tree — the [`crate::store`] key. Stable across
+    /// machines of the same OS; cross-OS portability is not yet guaranteed (see
+    /// [`crate::store::content_hash`]).
     pub hash: String,
     /// Names of this package's direct dependencies, sorted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
