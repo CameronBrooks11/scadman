@@ -44,6 +44,7 @@ pub enum Dependency {
 /// A Git dependency. Prefer `rev` for reproducibility; `tag`/`branch` are resolved to an
 /// exact revision at lock time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GitDependency {
     pub git: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -56,6 +57,7 @@ pub struct GitDependency {
 
 /// A local path dependency.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PathDependency {
     pub path: String,
 }
@@ -137,5 +139,19 @@ local-lib = { path = "../local-lib" }
         let text = m.to_toml().expect("serialize");
         let parsed = Manifest::from_toml(&text).expect("reparse");
         assert_eq!(m, parsed);
+    }
+
+    #[test]
+    fn misspelled_dependency_key_is_rejected() {
+        // `brunch` is a typo for `branch`; deny_unknown_fields must surface it as an error
+        // rather than silently dropping it and pinning nothing.
+        let text = r#"
+[project]
+name = "p"
+
+[dependencies]
+BOSL2 = { git = "https://x/BOSL2", brunch = "main" }
+"#;
+        assert!(Manifest::from_toml(text).is_err());
     }
 }
