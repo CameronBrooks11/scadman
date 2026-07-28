@@ -16,13 +16,15 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use crate::lockfile::Lockfile;
+use crate::manifest::validate_package_name;
 use crate::store::Store;
 
 /// A materialized project environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Environment {
-    /// The environment directory — scadman sets this as `OPENSCADPATH` (replacing it, so
-    /// only declared dependencies are visible).
+    /// The environment directory — scadman points `OPENSCADPATH` at it, so declared
+    /// dependencies shadow globally-installed libraries. (OpenSCAD still also searches its
+    /// built-in user/install dirs; the include-scan surfaces undeclared imports.)
     pub root: PathBuf,
     /// The package names exposed, sorted.
     pub exposed: Vec<String>,
@@ -39,6 +41,11 @@ pub fn build(lock: &Lockfile, store: &Store, env_root: &Path) -> io::Result<Envi
 
     let mut exposed = Vec::with_capacity(lock.packages.len());
     for package in &lock.packages {
+        // The lockfile is untrusted input (it travels with a cloned repo). This is the
+        // single chokepoint every package name funnels through to the filesystem, so
+        // validate here regardless of whether the resolver already did.
+        validate_package_name(&package.name).map_err(io::Error::other)?;
+
         let target = store.path_for(&package.hash);
         if !target.exists() {
             return Err(io::Error::other(format!(
@@ -131,5 +138,16 @@ mod tests {
         lock.packages.push(locked("Ghost", "nonexistent"));
         let env_dir = TempDir::new().unwrap();
         assert!(build(&lock, &store, &env_dir.path().join("env")).is_err());
+    }
+
+    #[test]
+    fn rejects_unsafe_package_name_from_the_lockfile() {
+        // A tampered/committed lockfile must not be able to plant a symlink outside the env.
+        let (_root, store) = store_with(&[]);
+        let mut lock = Lockfile::new();
+        lock.packages.push(locked("../evil", "anyhash"));
+        let env_dir = TempDir::new().unwrap();
+        let err = build(&lock, &store, &env_dir.path().join("env")).unwrap_err();
+        assert!(err.to_string().contains("valid package name"));
     }
 }

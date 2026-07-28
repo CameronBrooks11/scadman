@@ -14,7 +14,7 @@ use std::io;
 use std::path::Path;
 
 use crate::lockfile::{LOCKFILE_VERSION, LockedPackage, Lockfile};
-use crate::manifest::{Dependency, GitDependency, MANIFEST_FILE, Manifest};
+use crate::manifest::{Dependency, GitDependency, MANIFEST_FILE, Manifest, validate_package_name};
 use crate::source::fetch_git;
 use crate::store::Store;
 
@@ -144,6 +144,8 @@ pub enum ResolveError {
     },
     /// The dependency graph exceeded the depth backstop.
     TooDeep { name: String, depth: usize },
+    /// A dependency name is not a safe path component (from the root or a transitive manifest).
+    InvalidName { name: String, reason: String },
 }
 
 impl fmt::Display for ResolveError {
@@ -161,6 +163,9 @@ impl fmt::Display for ResolveError {
             }
             ResolveError::TooDeep { name, depth } => {
                 write!(f, "dependency graph too deep (>{depth}) at `{name}`")
+            }
+            ResolveError::InvalidName { name, reason } => {
+                write!(f, "invalid dependency name `{name}`: {reason}")
             }
         }
     }
@@ -212,6 +217,44 @@ pub fn canonical_url(url: &str) -> String {
     trimmed.strip_suffix(".git").unwrap_or(trimmed).to_string()
 }
 
+/// Report why `lock` is out of date with `manifest`, if it is.
+///
+/// Checks that every declared git dependency has a lock entry with the same identity and,
+/// for an exact `rev` pin, the same commit. It does not detect a changed tag/branch on an
+/// unchanged URL (that needs re-resolution), nor prune a removed dependency (a harmless
+/// extra pin).
+pub fn lock_staleness(manifest: &Manifest, lock: &Lockfile) -> Option<String> {
+    for (name, dep) in &manifest.dependencies {
+        let Dependency::Git(git) = dep else {
+            continue; // path/registry deps don't resolve in v1
+        };
+        let identity = canonical_url(&git.git);
+        match lock.packages.iter().find(|p| &p.name == name) {
+            None => return Some(format!("`{name}` is declared but not in the lockfile")),
+            Some(pkg) if pkg.source != identity => {
+                return Some(format!(
+                    "`{name}` source changed ({} → {})",
+                    pkg.source, identity
+                ));
+            }
+            Some(pkg) => {
+                // An exact `rev` change is knowable without re-resolving. The lock stores
+                // the full SHA and the manifest rev may be abbreviated, so a prefix match
+                // is fresh.
+                if let Some(requested) = &git.rev
+                    && !pkg.rev.starts_with(requested)
+                {
+                    return Some(format!(
+                        "`{name}` rev changed (manifest wants {requested}, lock has {})",
+                        pkg.rev
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Resolve a manifest into a pinned set — one version per identity.
 pub fn resolve(root: &Manifest, fetcher: &dyn Fetcher) -> Result<ResolvedSet, ResolveError> {
     let mut resolution = Resolution {
@@ -258,6 +301,13 @@ impl Resolution<'_> {
                 depth: MAX_DEPTH,
             });
         }
+
+        // A name from any manifest (root or a fetched transitive one) becomes a filesystem
+        // path segment — reject traversal before it reaches the store/environment.
+        validate_package_name(name).map_err(|reason| ResolveError::InvalidName {
+            name: name.to_string(),
+            reason,
+        })?;
 
         let git = match dep {
             Dependency::Git(git) => git,
@@ -640,5 +690,52 @@ mod tests {
         let root = manifest("[project]\nname = \"p\"\n[dependencies]\nA = \"^1.0\"\n");
         let err = resolve(&root, &FakeFetcher::new()).unwrap_err();
         assert!(matches!(err, ResolveError::Unsupported(_)));
+    }
+
+    #[test]
+    fn lock_staleness_detects_missing_source_and_rev_changes() {
+        let root = manifest(
+            "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"abc123\" }\n",
+        );
+
+        // Empty lock: A is declared but absent → stale.
+        assert!(lock_staleness(&root, &Lockfile::new()).is_some());
+
+        let one = |source: &str, rev: &str| {
+            let mut lock = Lockfile::new();
+            lock.packages.push(LockedPackage {
+                name: "A".to_string(),
+                source: source.to_string(),
+                rev: rev.to_string(),
+                hash: "h".to_string(),
+                dependencies: Vec::new(),
+            });
+            lock
+        };
+
+        // Matching source, and the manifest rev is a prefix of the locked SHA → fresh.
+        assert!(lock_staleness(&root, &one("https://h/A", "abc123def456")).is_none());
+        // Different source for the same name → stale.
+        assert!(lock_staleness(&root, &one("https://h/OTHER", "abc123")).is_some());
+        // Same source but a different rev → stale.
+        assert!(lock_staleness(&root, &one("https://h/A", "999999")).is_some());
+    }
+
+    #[test]
+    fn rejects_path_traversal_dependency_name() {
+        // A name like `../evil` — as could arrive from a transitive manifest — must be
+        // rejected before it becomes a filesystem path.
+        let mut root = Manifest::new("p");
+        root.dependencies.insert(
+            "../evil".to_string(),
+            Dependency::Git(GitDependency {
+                git: "https://h/x".to_string(),
+                rev: Some("r".to_string()),
+                tag: None,
+                branch: None,
+            }),
+        );
+        let err = resolve(&root, &FakeFetcher::new()).unwrap_err();
+        assert!(matches!(err, ResolveError::InvalidName { .. }));
     }
 }
