@@ -35,7 +35,9 @@ pub fn fetch_git(store: &Store, url: &str, reference: &str) -> io::Result<Acquir
     let dir = scratch.path();
 
     run_git(dir, &["init", "--quiet"])?;
-    run_git(dir, &["remote", "add", "origin", url])?;
+    // `--` guards a `-`-leading URL from being read as a git option (defense in depth;
+    // the URL comes from a manifest/lockfile).
+    run_git(dir, &["remote", "add", "origin", "--", url])?;
     // `--` before `reference` is load-bearing: without it a reference beginning with
     // `-` (e.g. `--upload-pack=…`) is parsed as a git option, which is arbitrary command
     // execution over local/ssh transports. References come from manifests/lockfiles.
