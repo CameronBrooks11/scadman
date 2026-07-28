@@ -10,6 +10,4 @@ description = "Core library for scadman: project manifest, lockfile, resolver, a
 serde.workspace = true
 toml.workspace = true
 sha2.workspace = true
-
-[dev-dependencies]
 tempfile.workspace = true
