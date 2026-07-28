@@ -8,8 +8,8 @@ use std::process::Command as ProcCommand;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use scadman_core::{
-    Environment, GitFetcher, Installed, Lockfile, Manifest, Store, build_environment, fetch_git,
-    lockfile, manifest, resolve, unmet_imports,
+    Dependency, Environment, GitDependency, GitFetcher, Installed, Lockfile, Manifest, Store,
+    build_environment, fetch_git, lockfile, manifest, resolve, unmet_imports,
 };
 
 #[derive(Parser)]
@@ -31,6 +31,22 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Add a git dependency to scadman.toml.
+    Add {
+        /// Name to expose the dependency under (the `<Name/…>` include prefix).
+        name: String,
+        /// Git URL of the dependency.
+        git: String,
+        /// Pin to an exact commit.
+        #[arg(long)]
+        rev: Option<String>,
+        /// Pin to a tag.
+        #[arg(long)]
+        tag: Option<String>,
+        /// Track a branch (locked to a commit at lock time).
+        #[arg(long)]
+        branch: Option<String>,
+    },
     /// Resolve dependencies and write scadman.lock.
     Lock,
     /// Materialize the project environment from the lockfile (resolving if needed).
@@ -46,6 +62,13 @@ enum Command {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Init { name } => init(name),
+        Command::Add {
+            name,
+            git,
+            rev,
+            tag,
+            branch,
+        } => add_cmd(name, git, rev, tag, branch),
         Command::Lock => lock_cmd(),
         Command::Sync => sync_cmd().map(|_| ()),
         Command::Run { args } => run_cmd(args),
@@ -68,6 +91,52 @@ fn init(name: Option<String>) -> Result<()> {
     fs::write(path, text).with_context(|| format!("write {}", manifest::MANIFEST_FILE))?;
     println!("Created {}", manifest::MANIFEST_FILE);
     Ok(())
+}
+
+fn add_cmd(
+    name: String,
+    git: String,
+    rev: Option<String>,
+    tag: Option<String>,
+    branch: Option<String>,
+) -> Result<()> {
+    let mut manifest = load_manifest()?;
+    let updated = add_dependency(&mut manifest, &name, git, rev, tag, branch)?;
+    let text = manifest.to_toml().context("serialize manifest")?;
+    fs::write(manifest::MANIFEST_FILE, text)
+        .with_context(|| format!("write {}", manifest::MANIFEST_FILE))?;
+    let verb = if updated { "Updated" } else { "Added" };
+    println!(
+        "{verb} `{name}` in {}. Run `scadman lock` to resolve.",
+        manifest::MANIFEST_FILE
+    );
+    Ok(())
+}
+
+/// Insert (or replace) a git dependency in the manifest. Returns whether an existing entry
+/// was replaced. Exactly one of `rev`/`tag`/`branch` must be given.
+fn add_dependency(
+    manifest: &mut Manifest,
+    name: &str,
+    git: String,
+    rev: Option<String>,
+    tag: Option<String>,
+    branch: Option<String>,
+) -> Result<bool> {
+    let refs = [&rev, &tag, &branch].iter().filter(|r| r.is_some()).count();
+    if refs != 1 {
+        bail!("specify exactly one of --rev, --tag, or --branch");
+    }
+    let dep = Dependency::Git(GitDependency {
+        git,
+        rev,
+        tag,
+        branch,
+    });
+    Ok(manifest
+        .dependencies
+        .insert(name.to_string(), dep)
+        .is_some())
 }
 
 fn lock_cmd() -> Result<()> {
@@ -199,4 +268,54 @@ fn current_dir_name() -> Option<String> {
         .file_name()?
         .to_str()
         .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_dependency_requires_exactly_one_ref() {
+        let mut m = Manifest::new("p");
+        assert!(add_dependency(&mut m, "A", "u".into(), None, None, None).is_err());
+        assert!(
+            add_dependency(
+                &mut m,
+                "A",
+                "u".into(),
+                Some("r".into()),
+                Some("t".into()),
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn add_dependency_inserts_then_updates() {
+        let mut m = Manifest::new("p");
+        let url = "https://github.com/BelfrySCAD/BOSL2".to_string();
+
+        let existed = add_dependency(
+            &mut m,
+            "BOSL2",
+            url.clone(),
+            None,
+            Some("v2.0".into()),
+            None,
+        )
+        .unwrap();
+        assert!(!existed);
+        match &m.dependencies["BOSL2"] {
+            Dependency::Git(g) => {
+                assert_eq!(g.git, url);
+                assert_eq!(g.tag.as_deref(), Some("v2.0"));
+            }
+            other => panic!("expected git dependency, got {other:?}"),
+        }
+
+        let existed =
+            add_dependency(&mut m, "BOSL2", url, Some("abc123".into()), None, None).unwrap();
+        assert!(existed);
+    }
 }
