@@ -1,6 +1,5 @@
 # Rust task runner
-# Mirrors the dev-toolbox just-conventions; will reconcile with the canonical
-# dev-toolbox Rust profile once it lands.
+# See https://github.com/CameronBrooks11/dev-toolbox/blob/main/docs/just-conventions.md
 
 set dotenv-load := false
 
@@ -8,7 +7,7 @@ set dotenv-load := false
 default:
     @just --list
 
-# Install toolchain components
+# Install dependencies and tools
 setup:
     rustup component add rustfmt clippy
 
@@ -24,7 +23,7 @@ fmt-check:
 lint:
     cargo clippy --all-targets --all-features -- -D warnings
 
-# Format-check + lint (non-mutating — safe for CI; clippy also type-checks)
+# Format + lint (non-mutating — safe for CI; clippy compiles, so it type-checks too)
 check: fmt-check lint
 
 # Run tests
@@ -37,7 +36,7 @@ build:
 
 # Run the CLI, e.g. `just run init --name demo`
 run *ARGS:
-    cargo run -p scadman-cli -- {{ARGS}}
+    cargo run -p scadman-cli -- {{ ARGS }}
 
 # Remove build artifacts
 clean:
