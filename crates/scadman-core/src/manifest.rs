@@ -62,6 +62,23 @@ pub struct PathDependency {
     pub path: String,
 }
 
+/// Validate that a package name is a safe single path component.
+///
+/// A name becomes an OpenSCAD include-path directory and a store/env path segment, so a
+/// value containing a separator or `..` (which can arrive from an attacker-influenced
+/// transitive `scadman.toml`) must be rejected before it reaches the filesystem.
+pub fn validate_package_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("package name is empty".to_string());
+    }
+    if name == "." || name == ".." || name.contains(['/', '\\', '\0']) {
+        return Err(format!(
+            "`{name}` is not a valid package name (no `/`, `\\`, NUL, `.`, or `..`)"
+        ));
+    }
+    Ok(())
+}
+
 impl Manifest {
     /// A fresh manifest for a project with the given name and no dependencies.
     pub fn new(name: impl Into<String>) -> Self {
@@ -139,6 +156,15 @@ local-lib = { path = "../local-lib" }
         let text = m.to_toml().expect("serialize");
         let parsed = Manifest::from_toml(&text).expect("reparse");
         assert_eq!(m, parsed);
+    }
+
+    #[test]
+    fn rejects_unsafe_package_names() {
+        assert!(validate_package_name("BOSL2").is_ok());
+        assert!(validate_package_name("Round-Anything").is_ok());
+        for bad in ["", ".", "..", "../evil", "a/b", "a\\b", "x\0y"] {
+            assert!(validate_package_name(bad).is_err(), "should reject `{bad}`");
+        }
     }
 
     #[test]

@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use scadman_core::{
     Dependency, Environment, GitDependency, GitFetcher, Installed, Lockfile, Manifest, Store,
-    build_environment, fetch_git, lockfile, manifest, resolve, unmet_imports,
+    build_environment, fetch_git, lock_staleness, lockfile, manifest, resolve, unmet_imports,
 };
 
 #[derive(Parser)]
@@ -123,6 +123,7 @@ fn add_dependency(
     tag: Option<String>,
     branch: Option<String>,
 ) -> Result<bool> {
+    manifest::validate_package_name(name).map_err(|e| anyhow::anyhow!(e))?;
     let refs = [&rev, &tag, &branch].iter().filter(|r| r.is_some()).count();
     if refs != 1 {
         bail!("specify exactly one of --rev, --tag, or --branch");
@@ -169,7 +170,9 @@ fn sync_cmd() -> Result<Environment> {
 
 fn run_cmd(args: Vec<String>) -> Result<()> {
     let env = sync_cmd()?;
-    // Replace (not prepend) OPENSCADPATH so only declared dependencies are visible.
+    // Point OPENSCADPATH at the project env so declared dependencies shadow globals.
+    // (OPENSCADPATH adds to the search path — OpenSCAD still searches its built-in user
+    // and install library dirs — so the include-scan is what surfaces undeclared imports.)
     let status = ProcCommand::new("openscad")
         .env("OPENSCADPATH", &env.root)
         .args(&args)
@@ -204,12 +207,28 @@ fn resolve_lock(manifest: &Manifest, store: &Store) -> Result<Lockfile> {
 }
 
 fn read_or_lock(store: &Store) -> Result<Lockfile> {
+    let manifest = load_manifest()?;
     if Path::new(lockfile::LOCKFILE_FILE).exists() {
         let text = fs::read_to_string(lockfile::LOCKFILE_FILE)?;
-        return Lockfile::from_toml(&text)
-            .with_context(|| format!("parse {}", lockfile::LOCKFILE_FILE));
+        let lock = Lockfile::from_toml(&text)
+            .with_context(|| format!("parse {}", lockfile::LOCKFILE_FILE))?;
+        if lock.version != lockfile::LOCKFILE_VERSION {
+            bail!(
+                "{} is lockfile version {} but this scadman understands {} — upgrade scadman",
+                lockfile::LOCKFILE_FILE,
+                lock.version,
+                lockfile::LOCKFILE_VERSION
+            );
+        }
+        if let Some(reason) = lock_staleness(&manifest, &lock) {
+            bail!(
+                "{} is out of date with {}: {reason}. Run `scadman lock`.",
+                lockfile::LOCKFILE_FILE,
+                manifest::MANIFEST_FILE
+            );
+        }
+        return Ok(lock);
     }
-    let manifest = load_manifest()?;
     let lock = resolve_lock(&manifest, store)?;
     write_lock(&lock)?;
     Ok(lock)

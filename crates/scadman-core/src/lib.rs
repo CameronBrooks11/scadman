@@ -20,7 +20,7 @@ pub use lockfile::{LockedPackage, Lockfile};
 pub use manifest::{Dependency, GitDependency, Manifest, PathDependency, Project};
 pub use resolver::{
     Conflict, Fetched, Fetcher, GitFetcher, ResolveError, Resolved, ResolvedSet, canonical_url,
-    resolve,
+    lock_staleness, resolve,
 };
 pub use source::{Acquired, fetch_git};
 pub use store::{Store, StoreEntry, content_hash};
