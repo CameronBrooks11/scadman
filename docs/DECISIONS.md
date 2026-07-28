@@ -218,6 +218,31 @@ findings report + a curated set of fixture repos — get promoted into scadman
 
 ---
 
+## D9. Dependency resolver (v1)
+
+Settled after a research pass over the ecosystem survey + solver prior art. Full rationale
+in [resolver-direction.md](resolver-direction.md).
+
+The data shows there is nothing to *solve* (81% of wild repos have zero deps, max depth 2,
+zero version conflicts in 196 repos, zero formal manifests). So v1 is **"collect-and-unify"**,
+not a constraint solver: deterministic DFS, resolve each ref → exact SHA, one identity →
+one rev, hard error on conflict. Formalize the data model (`Requirement`/`Conflict`) behind
+a narrow `manifest + fetcher → ResolvedSet` interface so a later **pubgrub-rs** swap is
+contained.
+
+Cut from v1 (0 triggers in the corpus): pseudo-versions, a reserved semver-range variant,
+the polished conflict renderer. **Added** to v1: a post-install include-scan flagging
+unmet imports (the only feature the data shows firing today; manifest-less transitive deps
+are the real scenario). Key settled choices: identity = name-bound-to-canonical-URL (URL
+authoritative); manifest-less transitive deps → user declares + include-scan warns;
+override syntax reserved, impl deferred; branch refs allowed but SHA-locked; bundled MCAD
+is fetchable (shadowable via `OPENSCADPATH`).
+
+**Decision:** collect-and-unify for v1; adopt pubgrub-rs only when a registry brings semver
+ranges or real library-on-library depth appears.
+
+---
+
 ## Decision summary (fill in as you go)
 
 | # | Decision | Call | Status |
@@ -230,3 +255,4 @@ findings report + a curated set of fixture repos — get promoted into scadman
 | D6 | Stage 0 first? | Yes — survey spike, done properly | DECIDED |
 | D7 | Repo shape | scadman = product; survey = `CameronBrooks11/scadman-survey` (private) | DECIDED |
 | D8 | Housekeeping | gitignore→Rust ✓ · README thesis ✓ · Apache-2.0 ✓ · registry DEFERRED | DECIDED |
+| D9 | Resolver (v1) | Collect-and-unify (not a solver); include-scan; pubgrub-rs later | DECIDED |
