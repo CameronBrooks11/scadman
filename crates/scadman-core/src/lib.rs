@@ -6,6 +6,7 @@
 //! releases, many assume they are installed under their own name, and the namespace is
 //! flat and collision-prone. The model is shaped accordingly.
 
+pub mod environment;
 pub mod imports;
 pub mod lockfile;
 pub mod manifest;
@@ -13,6 +14,7 @@ pub mod resolver;
 pub mod source;
 pub mod store;
 
+pub use environment::{Environment, build as build_environment};
 pub use imports::{Installed, UnmetImport, unmet_imports};
 pub use lockfile::{LockedPackage, Lockfile};
 pub use manifest::{Dependency, GitDependency, Manifest, PathDependency, Project};

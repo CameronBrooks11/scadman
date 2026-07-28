@@ -25,7 +25,7 @@ pub struct Lockfile {
 pub struct LockedPackage {
     /// Canonical package name (the include-path prefix it is exposed under).
     pub name: String,
-    /// Source identifier, e.g. `git+https://github.com/owner/repo`.
+    /// Canonical, git-fetchable source URL, e.g. `https://github.com/owner/repo`.
     pub source: String,
     /// Exact resolved revision (a Git commit SHA for Git sources).
     pub rev: String,
@@ -69,7 +69,7 @@ mod tests {
     fn sample_package() -> LockedPackage {
         LockedPackage {
             name: "BOSL2".to_string(),
-            source: "git+https://github.com/BelfrySCAD/BOSL2".to_string(),
+            source: "https://github.com/BelfrySCAD/BOSL2".to_string(),
             rev: "afe82db884ee4409aa76ecfcfbbf54d446964af1".to_string(),
             hash: "abc123".to_string(),
             dependencies: Vec::new(),
