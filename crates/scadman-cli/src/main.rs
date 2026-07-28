@@ -1,6 +1,6 @@
 //! The `scadman` command-line interface.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcCommand;
@@ -11,6 +11,7 @@ use scadman_core::{
     Dependency, Environment, GitDependency, GitFetcher, Installed, Lockfile, Manifest, Store,
     build_environment, fetch_git, lock_staleness, lockfile, manifest, resolve, unmet_imports,
 };
+use serde::Serialize;
 
 #[derive(Parser)]
 #[command(
@@ -47,10 +48,23 @@ enum Command {
         #[arg(long)]
         branch: Option<String>,
     },
+    /// Remove a dependency from scadman.toml.
+    Remove {
+        /// Name of the dependency to remove.
+        name: String,
+    },
+    /// List declared dependencies and their locked state.
+    List,
     /// Resolve dependencies and write scadman.lock.
     Lock,
     /// Materialize the project environment from the lockfile (resolving if needed).
     Sync,
+    /// Print the project's OPENSCADPATH (point your editor/OpenSCAD at it).
+    Env {
+        /// Emit a machine-readable JSON report instead of the path.
+        #[arg(long)]
+        json: bool,
+    },
     /// Sync, then run OpenSCAD with the project environment on OPENSCADPATH.
     Run {
         /// Arguments passed through to openscad (e.g. the .scad file).
@@ -69,8 +83,11 @@ fn main() -> Result<()> {
             tag,
             branch,
         } => add_cmd(name, git, rev, tag, branch),
+        Command::Remove { name } => remove_cmd(name),
+        Command::List => list_cmd(),
         Command::Lock => lock_cmd(),
         Command::Sync => sync_cmd().map(|_| ()),
+        Command::Env { json } => env_cmd(json),
         Command::Run { args } => run_cmd(args),
     }
 }
@@ -90,7 +107,137 @@ fn init(name: Option<String>) -> Result<()> {
     let text = manifest.to_toml().context("serialize manifest")?;
     fs::write(path, text).with_context(|| format!("write {}", manifest::MANIFEST_FILE))?;
     println!("Created {}", manifest::MANIFEST_FILE);
+    if ensure_gitignore()? {
+        println!("Added `.scadman/` to .gitignore");
+    }
     Ok(())
+}
+
+/// Ensure `.gitignore` ignores the machine-local `.scadman/` env dir. Returns whether the
+/// file was modified.
+fn ensure_gitignore() -> Result<bool> {
+    let path = Path::new(".gitignore");
+    let current = fs::read_to_string(path).unwrap_or_default();
+    let already = current
+        .lines()
+        .map(str::trim)
+        .any(|l| l == ".scadman/" || l == ".scadman" || l == "/.scadman/");
+    if already {
+        return Ok(false);
+    }
+    let mut content = current;
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(".scadman/\n");
+    fs::write(path, content).context("update .gitignore")?;
+    Ok(true)
+}
+
+fn remove_cmd(name: String) -> Result<()> {
+    let mut manifest = load_manifest()?;
+    if manifest.dependencies.remove(&name).is_none() {
+        bail!(
+            "`{name}` is not a dependency in {}",
+            manifest::MANIFEST_FILE
+        );
+    }
+    let text = manifest.to_toml().context("serialize manifest")?;
+    fs::write(manifest::MANIFEST_FILE, text)
+        .with_context(|| format!("write {}", manifest::MANIFEST_FILE))?;
+    println!(
+        "Removed `{name}` from {}. Run `scadman lock`.",
+        manifest::MANIFEST_FILE
+    );
+    Ok(())
+}
+
+fn list_cmd() -> Result<()> {
+    let manifest = load_manifest()?;
+    if manifest.dependencies.is_empty() {
+        println!("No dependencies declared.");
+        return Ok(());
+    }
+    let locked = locked_revs();
+    for (name, dep) in &manifest.dependencies {
+        let spec = match dep {
+            Dependency::Git(g) => {
+                let reference = g
+                    .rev
+                    .as_deref()
+                    .or(g.tag.as_deref())
+                    .or(g.branch.as_deref())
+                    .unwrap_or("?");
+                format!("{} @ {reference}", g.git)
+            }
+            Dependency::Version(v) => format!("version {v}"),
+            Dependency::Path(p) => format!("path {}", p.path),
+        };
+        match locked.get(name) {
+            Some(rev) => println!("{name}  {spec}  (locked {})", short(rev)),
+            None => println!("{name}  {spec}  (not locked)"),
+        }
+    }
+    Ok(())
+}
+
+/// Locked name → resolved rev, from an existing lockfile (empty if none/unreadable).
+fn locked_revs() -> BTreeMap<String, String> {
+    if !Path::new(lockfile::LOCKFILE_FILE).exists() {
+        return BTreeMap::new();
+    }
+    let Ok(text) = fs::read_to_string(lockfile::LOCKFILE_FILE) else {
+        return BTreeMap::new();
+    };
+    match Lockfile::from_toml(&text) {
+        Ok(lock) => lock.packages.into_iter().map(|p| (p.name, p.rev)).collect(),
+        Err(_) => BTreeMap::new(),
+    }
+}
+
+fn short(rev: &str) -> &str {
+    &rev[..rev.len().min(12)]
+}
+
+fn env_cmd(json: bool) -> Result<()> {
+    let store = open_store()?;
+    let (lock, env) = prepare_environment(&store)?;
+    if json {
+        let report = EnvReport {
+            openscadpath: env.root.display().to_string(),
+            packages: lock
+                .packages
+                .iter()
+                .map(|p| EnvPackage {
+                    name: p.name.clone(),
+                    source: p.source.clone(),
+                    rev: p.rev.clone(),
+                    hash: p.hash.clone(),
+                    store_path: store.path_for(&p.hash).display().to_string(),
+                })
+                .collect(),
+        };
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("{}", env.root.display());
+    }
+    Ok(())
+}
+
+/// A machine-readable view of the project environment, for editors/tooling.
+#[derive(Serialize)]
+struct EnvReport {
+    openscadpath: String,
+    packages: Vec<EnvPackage>,
+}
+
+#[derive(Serialize)]
+struct EnvPackage {
+    name: String,
+    source: String,
+    rev: String,
+    hash: String,
+    store_path: String,
 }
 
 fn add_cmd(
@@ -153,13 +300,20 @@ fn lock_cmd() -> Result<()> {
     Ok(())
 }
 
+/// Resolve-or-read the lock, ensure content is stored, build the environment, and warn
+/// about undeclared imports (to stderr). Prints nothing to stdout, so `env` can emit only
+/// its report.
+fn prepare_environment(store: &Store) -> Result<(Lockfile, Environment)> {
+    let lock = read_or_lock(store)?;
+    ensure_stored(&lock, store)?;
+    let env = build_environment(&lock, store, &env_root()?).context("build environment")?;
+    warn_unmet_imports(&lock, &env);
+    Ok((lock, env))
+}
+
 fn sync_cmd() -> Result<Environment> {
     let store = open_store()?;
-    let lock = read_or_lock(&store)?;
-    ensure_stored(&lock, &store)?;
-
-    let env = build_environment(&lock, &store, &env_root()?).context("build environment")?;
-    warn_unmet_imports(&lock, &env);
+    let (_, env) = prepare_environment(&store)?;
     println!(
         "Synced {} package(s) → {}",
         env.exposed.len(),
@@ -169,7 +323,8 @@ fn sync_cmd() -> Result<Environment> {
 }
 
 fn run_cmd(args: Vec<String>) -> Result<()> {
-    let env = sync_cmd()?;
+    let store = open_store()?;
+    let (_, env) = prepare_environment(&store)?;
     // Point OPENSCADPATH at the project env so declared dependencies shadow globals.
     // (OPENSCADPATH adds to the search path — OpenSCAD still searches its built-in user
     // and install library dirs — so the include-scan is what surfaces undeclared imports.)

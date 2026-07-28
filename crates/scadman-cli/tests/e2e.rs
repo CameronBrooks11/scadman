@@ -171,3 +171,108 @@ fn sync_rejects_a_stale_lockfile() {
         "expected a staleness error"
     );
 }
+
+#[test]
+fn init_scaffolds_gitignore() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = root.path().join("p");
+    fs::create_dir_all(&proj).unwrap();
+
+    assert!(
+        scadman(&proj, store.path(), &["init", "--name", "demo"])
+            .status
+            .success()
+    );
+    let gitignore = fs::read_to_string(proj.join(".gitignore")).unwrap();
+    assert!(
+        gitignore.contains(".scadman/"),
+        "init should ignore .scadman/"
+    );
+}
+
+#[test]
+fn add_remove_and_list() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = root.path().join("p");
+    fs::create_dir_all(&proj).unwrap();
+    assert!(
+        scadman(&proj, store.path(), &["init", "--name", "demo"])
+            .status
+            .success()
+    );
+    assert!(
+        scadman(
+            &proj,
+            store.path(),
+            &[
+                "add",
+                "BOSL2",
+                "https://github.com/BelfrySCAD/BOSL2",
+                "--tag",
+                "v2.0"
+            ],
+        )
+        .status
+        .success()
+    );
+
+    let list = scadman(&proj, store.path(), &["list"]);
+    assert!(list.status.success());
+    let out = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        out.contains("BOSL2") && out.contains("not locked"),
+        "list: {out}"
+    );
+
+    assert!(
+        scadman(&proj, store.path(), &["remove", "BOSL2"])
+            .status
+            .success()
+    );
+    let list = scadman(&proj, store.path(), &["list"]);
+    assert!(String::from_utf8_lossy(&list.stdout).contains("No dependencies"));
+
+    // Removing a non-existent dependency errors.
+    assert!(
+        !scadman(&proj, store.path(), &["remove", "BOSL2"])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn env_reports_path_and_json() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, rev) = make_lib(root.path());
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
+            lib.display()
+        ),
+    );
+
+    let env = scadman(&proj, store.path(), &["env"]);
+    assert!(
+        env.status.success(),
+        "env: {}",
+        String::from_utf8_lossy(&env.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&env.stdout)
+            .trim()
+            .ends_with(".scadman/env"),
+        "env should print the OPENSCADPATH dir on stdout"
+    );
+
+    let json = scadman(&proj, store.path(), &["env", "--json"]);
+    assert!(json.status.success());
+    let text = String::from_utf8_lossy(&json.stdout);
+    assert!(
+        text.contains("openscadpath") && text.contains("mylib") && text.contains(&rev),
+        "env --json: {text}"
+    );
+}
