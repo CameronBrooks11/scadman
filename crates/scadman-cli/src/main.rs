@@ -77,6 +77,12 @@ enum Command {
     },
     /// Report on the project setup (OpenSCAD, store, manifest, lock, environment).
     Doctor,
+    /// Print the resolved dependency graph (from scadman.lock).
+    Graph {
+        /// Emit a machine-readable JSON graph instead of a tree.
+        #[arg(long)]
+        json: bool,
+    },
     /// Sync, then run OpenSCAD with the project environment on OPENSCADPATH.
     Run {
         /// Arguments passed through to openscad (e.g. the .scad file).
@@ -103,6 +109,7 @@ fn main() -> Result<()> {
         Command::Sync => sync_cmd().map(|_| ()),
         Command::Env { json, write_vscode } => env_cmd(json, write_vscode),
         Command::Doctor => doctor_cmd(),
+        Command::Graph { json } => graph_cmd(json),
         Command::Run { args } => run_cmd(args),
     }
 }
@@ -381,6 +388,97 @@ fn openscad_version() -> Option<String> {
     };
     let line = text.lines().next().unwrap_or("").trim();
     (!line.is_empty()).then(|| line.to_string())
+}
+
+/// The resolved dependency graph, as a tree rooted at the project (or JSON).
+fn graph_cmd(json: bool) -> Result<()> {
+    let manifest = load_manifest()?;
+    let lock = load_lockfile()?;
+    let packages: BTreeMap<&str, &lockfile::LockedPackage> =
+        lock.packages.iter().map(|p| (p.name.as_str(), p)).collect();
+    let roots: Vec<String> = manifest.dependencies.keys().cloned().collect();
+
+    if json {
+        let graph = GraphReport {
+            project: manifest.project.name,
+            roots,
+            nodes: lock
+                .packages
+                .iter()
+                .map(|p| GraphNode {
+                    name: p.name.clone(),
+                    source: p.source.clone(),
+                    rev: p.rev.clone(),
+                    dependencies: p.dependencies.clone(),
+                })
+                .collect(),
+        };
+        println!("{}", serde_json::to_string_pretty(&graph)?);
+        return Ok(());
+    }
+
+    println!("{}", manifest.project.name);
+    if roots.is_empty() {
+        println!("(no dependencies)");
+        return Ok(());
+    }
+    let mut visited = BTreeSet::new();
+    let last = roots.len() - 1;
+    for (i, root) in roots.iter().enumerate() {
+        print_graph_node(root, "", i == last, &packages, &mut visited);
+    }
+    Ok(())
+}
+
+/// Recursively print one graph node and its dependencies as an indented tree. A node whose
+/// subtree was already printed is shown as `(*)` and not re-expanded (also breaks cycles).
+fn print_graph_node(
+    name: &str,
+    prefix: &str,
+    last: bool,
+    packages: &BTreeMap<&str, &lockfile::LockedPackage>,
+    visited: &mut BTreeSet<String>,
+) {
+    let connector = if last { "└── " } else { "├── " };
+    let Some(pkg) = packages.get(name) else {
+        println!("{prefix}{connector}{name} (not locked)");
+        return;
+    };
+    if visited.contains(name) && !pkg.dependencies.is_empty() {
+        println!("{prefix}{connector}{name} @ {} (*)", short(&pkg.rev));
+        return;
+    }
+    visited.insert(name.to_string());
+    println!("{prefix}{connector}{name} @ {}", short(&pkg.rev));
+
+    let child_prefix = format!("{prefix}{}", if last { "    " } else { "│   " });
+    let last_dep = pkg.dependencies.len().saturating_sub(1);
+    for (i, dep) in pkg.dependencies.iter().enumerate() {
+        print_graph_node(dep, &child_prefix, i == last_dep, packages, visited);
+    }
+}
+
+/// The dependency graph as data: every locked node plus the project's direct roots.
+#[derive(Serialize)]
+struct GraphReport {
+    project: String,
+    roots: Vec<String>,
+    nodes: Vec<GraphNode>,
+}
+
+#[derive(Serialize)]
+struct GraphNode {
+    name: String,
+    source: String,
+    rev: String,
+    dependencies: Vec<String>,
+}
+
+/// Load `scadman.lock`, erroring with a nudge to `scadman lock` if it is missing.
+fn load_lockfile() -> Result<Lockfile> {
+    let text = fs::read_to_string(lockfile::LOCKFILE_FILE)
+        .with_context(|| format!("{} not found — run `scadman lock`", lockfile::LOCKFILE_FILE))?;
+    Lockfile::from_toml(&text).with_context(|| format!("parse {}", lockfile::LOCKFILE_FILE))
 }
 
 #[allow(clippy::too_many_arguments)]

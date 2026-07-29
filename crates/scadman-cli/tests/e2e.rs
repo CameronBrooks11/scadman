@@ -408,3 +408,47 @@ fn env_write_vscode_merges_settings() {
         "preserves existing settings"
     );
 }
+
+#[test]
+fn graph_prints_tree_and_json() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, rev) = make_lib(root.path());
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
+            lib.display()
+        ),
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+
+    let tree = scadman(&proj, store.path(), &["graph"]);
+    assert!(tree.status.success());
+    let text = String::from_utf8_lossy(&tree.stdout);
+    assert!(text.contains("demo"), "prints the project name");
+    assert!(text.contains("mylib"), "prints the dependency");
+
+    let json = scadman(&proj, store.path(), &["graph", "--json"]);
+    assert!(json.status.success());
+    let text = String::from_utf8_lossy(&json.stdout);
+    assert!(text.contains("\"project\": \"demo\""), "json has project");
+    assert!(text.contains("\"roots\""), "json has roots");
+    assert!(text.contains("\"mylib\""), "json has the node");
+}
+
+#[test]
+fn graph_without_lock_nudges() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = project_with(root.path(), "[project]\nname = \"demo\"\n");
+    let out = scadman(&proj, store.path(), &["graph"]);
+    assert!(
+        !out.status.success(),
+        "graph without a lockfile should fail"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("scadman lock"),
+        "nudges to run lock"
+    );
+}
