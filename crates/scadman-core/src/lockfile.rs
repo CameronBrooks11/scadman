@@ -36,6 +36,24 @@ pub struct LockedPackage {
     /// Names of this package's direct dependencies, sorted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dependencies: Vec<String>,
+    /// Library-root subdir exposed under the package name (default: the repo root, `"."`).
+    #[serde(default = "root_default", skip_serializing_if = "is_root_default")]
+    pub root: String,
+    /// Whether the exposed root is also placed on `OPENSCADPATH` (default false).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub on_path: bool,
+}
+
+fn root_default() -> String {
+    ".".to_string()
+}
+
+fn is_root_default(root: &str) -> bool {
+    root == "."
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 impl Lockfile {
@@ -75,6 +93,8 @@ mod tests {
             rev: "afe82db884ee4409aa76ecfcfbbf54d446964af1".to_string(),
             hash: "abc123".to_string(),
             dependencies: Vec::new(),
+            root: ".".to_string(),
+            on_path: false,
         }
     }
 

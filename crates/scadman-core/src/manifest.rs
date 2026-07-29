@@ -53,6 +53,19 @@ pub struct GitDependency {
     pub tag: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// Library-root subdir within the repo to expose (default: the repo root). For
+    /// libraries that keep their code under e.g. `src/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    /// Also place the exposed root directly on `OPENSCADPATH`, so the library's own
+    /// root-relative imports (e.g. dotSCAD's `<util/…>`) resolve. Off by default; opt in
+    /// only for libraries that need it — it globalizes that library's top-level filenames.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub on_path: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 /// A local path dependency.
@@ -75,6 +88,18 @@ pub fn validate_package_name(name: &str) -> Result<(), String> {
         return Err(format!(
             "`{name}` is not a valid package name (no `/`, `\\`, NUL, `.`, or `..`)"
         ));
+    }
+    Ok(())
+}
+
+/// Validate that a library-root subdir stays within the package (it is joined onto the
+/// store path and exposed to OpenSCAD).
+pub fn validate_library_root(root: &str) -> Result<(), String> {
+    if root.starts_with('/') || root.contains('\0') {
+        return Err(format!("library root `{root}` must be a relative path"));
+    }
+    if root.split('/').any(|c| c == "..") {
+        return Err(format!("library root `{root}` must not contain `..`"));
     }
     Ok(())
 }
@@ -138,6 +163,8 @@ local-lib = { path = "../local-lib" }
                 rev: Some("061fef7".to_string()),
                 tag: None,
                 branch: None,
+                root: None,
+                on_path: false,
             })
         );
         assert_eq!(
