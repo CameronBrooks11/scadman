@@ -51,7 +51,7 @@ name = "dotSCAD"
 repo = "https://github.com/JustinSDK/dotSCAD"
 rev = "bb33edfd75cba0edbb7971606a077b9c69d0b7d2"
 archetype = "src-layout"
-role = "large src/ layout; relies on bare OPENSCADPATH-resolved imports"
+role = "large src/ layout; needs its root on OPENSCADPATH — consume with root/on_path"
 license = "LGPL-3.0"
 layout = "src-layout"
 tags = 22
@@ -59,6 +59,11 @@ scad_files = 695
 modules = 709
 functions = 1005
 self_rooted = false
+# Consumption: this library keeps its code under src/ and its files import from that
+# root, so it must be added with a library-root subdir and placed on OPENSCADPATH:
+#   scadman add dotSCAD <repo> --rev <rev> --root src --on-path
+root = "src"
+on_path = true
 
 [[fixture]]
 name = "Round-Anything"

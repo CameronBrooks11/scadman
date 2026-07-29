@@ -36,6 +36,10 @@ scadman remove BOSL2         # drop a dependency
 Because most OpenSCAD libraries don't publish releases, an exact git revision is a
 first-class dependency form, not an afterthought.
 
+Libraries whose code lives under a subdir (e.g. `src/`) and import from that root — such as
+dotSCAD — are added with `--root src --on-path` (see
+[docs/library-roots.md](docs/library-roots.md)).
+
 ### Editor integration
 
 `scadman env` prints the project's `OPENSCADPATH`, and `scadman env --json` emits a
