@@ -71,7 +71,12 @@ enum Command {
         /// Emit a machine-readable JSON report instead of the path.
         #[arg(long)]
         json: bool,
+        /// Write the search path into .vscode/settings.json for the OpenSCAD language server.
+        #[arg(long, conflicts_with = "json")]
+        write_vscode: bool,
     },
+    /// Report on the project setup (OpenSCAD, store, manifest, lock, environment).
+    Doctor,
     /// Sync, then run OpenSCAD with the project environment on OPENSCADPATH.
     Run {
         /// Arguments passed through to openscad (e.g. the .scad file).
@@ -96,7 +101,8 @@ fn main() -> Result<()> {
         Command::List => list_cmd(),
         Command::Lock => lock_cmd(),
         Command::Sync => sync_cmd().map(|_| ()),
-        Command::Env { json } => env_cmd(json),
+        Command::Env { json, write_vscode } => env_cmd(json, write_vscode),
+        Command::Doctor => doctor_cmd(),
         Command::Run { args } => run_cmd(args),
     }
 }
@@ -208,7 +214,7 @@ fn short(rev: &str) -> &str {
     &rev[..rev.len().min(12)]
 }
 
-fn env_cmd(json: bool) -> Result<()> {
+fn env_cmd(json: bool, write_vscode: bool) -> Result<()> {
     let store = open_store()?;
     let (lock, env) = prepare_environment(&store)?;
     let openscadpath = env
@@ -216,6 +222,10 @@ fn env_cmd(json: bool) -> Result<()> {
         .context("assemble OPENSCADPATH")?
         .to_string_lossy()
         .into_owned();
+    if write_vscode {
+        write_vscode_settings(&openscadpath)?;
+        return Ok(());
+    }
     if json {
         let report = EnvReport {
             openscadpath,
@@ -252,6 +262,125 @@ struct EnvPackage {
     rev: String,
     hash: String,
     store_path: String,
+}
+
+/// Write the project search path into `.vscode/settings.json` for the OpenSCAD language
+/// server (`openscad.search_paths`), merging into any existing settings.
+fn write_vscode_settings(openscadpath: &str) -> Result<()> {
+    let dir = Path::new(".vscode");
+    fs::create_dir_all(dir).context("create .vscode")?;
+    let path = dir.join("settings.json");
+
+    let mut settings = if path.exists() {
+        let text = fs::read_to_string(&path)?;
+        serde_json::from_str(&text).with_context(|| {
+            format!(
+                "{} is not plain JSON (comments/JSONC aren't supported here) — add \
+                 `openscad.search_paths` manually",
+                path.display()
+            )
+        })?
+    } else {
+        serde_json::json!({})
+    };
+    let object = settings
+        .as_object_mut()
+        .context(".vscode/settings.json is not a JSON object")?;
+    object.insert(
+        "openscad.search_paths".to_string(),
+        serde_json::Value::String(openscadpath.to_string()),
+    );
+
+    fs::write(
+        &path,
+        format!("{}\n", serde_json::to_string_pretty(&settings)?),
+    )
+    .with_context(|| format!("write {}", path.display()))?;
+    println!("Wrote `openscad.search_paths` to {}", path.display());
+    Ok(())
+}
+
+fn doctor_cmd() -> Result<()> {
+    match openscad_version() {
+        Some(version) => println!("openscad:     {version}"),
+        None => println!("openscad:     not found on PATH — `scadman run` will fail"),
+    }
+    match Store::default_root() {
+        Some(root) => println!(
+            "store:        {}{}",
+            root.display(),
+            if root.exists() { "" } else { " (empty)" }
+        ),
+        None => println!("store:        unavailable ($XDG_DATA_HOME and $HOME unset)"),
+    }
+
+    let manifest = load_manifest().ok();
+    match &manifest {
+        Some(m) => println!(
+            "manifest:     {} ({} dependencies)",
+            manifest::MANIFEST_FILE,
+            m.dependencies.len()
+        ),
+        None => println!(
+            "manifest:     {} not found — run `scadman init`",
+            manifest::MANIFEST_FILE
+        ),
+    }
+
+    if let Some(m) = &manifest {
+        report_lockfile(m);
+    }
+
+    let env_dir = env_root()?;
+    if env_dir.exists() {
+        let count = fs::read_dir(&env_dir).map(Iterator::count).unwrap_or(0);
+        println!(
+            "environment:  {count} package(s) exposed at {}",
+            env_dir.display()
+        );
+    } else {
+        println!("environment:  not built — run `scadman sync`");
+    }
+    Ok(())
+}
+
+fn report_lockfile(manifest: &Manifest) {
+    if !Path::new(lockfile::LOCKFILE_FILE).exists() {
+        println!("lockfile:     not created — run `scadman lock`");
+        return;
+    }
+    let lock = fs::read_to_string(lockfile::LOCKFILE_FILE)
+        .ok()
+        .and_then(|t| Lockfile::from_toml(&t).ok());
+    match lock {
+        Some(lock) => match lock_staleness(manifest, &lock) {
+            Some(reason) => {
+                println!("lockfile:     out of date ({reason}) — run `scadman lock`")
+            }
+            None => println!(
+                "lockfile:     {} ({} packages, up to date)",
+                lockfile::LOCKFILE_FILE,
+                lock.packages.len()
+            ),
+        },
+        None => println!("lockfile:     present but unreadable"),
+    }
+}
+
+/// The `openscad --version` line, or `None` if it is not on `PATH`.
+fn openscad_version() -> Option<String> {
+    // OpenSCAD prints its version to stderr.
+    let output = ProcCommand::new("openscad")
+        .arg("--version")
+        .output()
+        .ok()?;
+    let text = if output.stderr.is_empty() {
+        String::from_utf8_lossy(&output.stdout)
+    } else {
+        String::from_utf8_lossy(&output.stderr)
+    };
+    let line = text.lines().next().unwrap_or("").trim();
+    (!line.is_empty()).then(|| line.to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
