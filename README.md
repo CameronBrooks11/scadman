@@ -39,6 +39,7 @@ scadman lock                 # resolve dependencies → scadman.lock (exact rev 
 scadman sync                 # materialize the environment; warn about undeclared imports
 scadman run -- model.scad -o out.stl   # run OpenSCAD with the project's dependencies
 scadman remove BOSL2         # drop a dependency
+scadman graph                # show the resolved dependency graph (--json for tooling)
 scadman doctor               # check OpenSCAD, store, manifest, lock, and environment
 ```
 
