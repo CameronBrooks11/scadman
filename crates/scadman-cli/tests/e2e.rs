@@ -348,3 +348,63 @@ fn dotscad_renders_with_root_and_on_path() {
         "dotSCAD should render an STL"
     );
 }
+
+#[test]
+fn doctor_reports_setup() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, rev) = make_lib(root.path());
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"d\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
+            lib.display()
+        ),
+    );
+    let out = scadman(&proj, store.path(), &["doctor"]);
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("manifest:") && text.contains("lockfile:") && text.contains("environment:")
+    );
+    assert!(
+        text.contains("scadman lock"),
+        "should nudge to lock when unlocked"
+    );
+}
+
+#[test]
+fn env_write_vscode_merges_settings() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, rev) = make_lib(root.path());
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"d\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
+            lib.display()
+        ),
+    );
+    fs::create_dir_all(proj.join(".vscode")).unwrap();
+    fs::write(
+        proj.join(".vscode").join("settings.json"),
+        "{\n  \"editor.tabSize\": 2\n}\n",
+    )
+    .unwrap();
+
+    let out = scadman(&proj, store.path(), &["env", "--write-vscode"]);
+    assert!(
+        out.status.success(),
+        "env --write-vscode: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let settings = fs::read_to_string(proj.join(".vscode").join("settings.json")).unwrap();
+    assert!(
+        settings.contains("openscad.search_paths"),
+        "sets the LSP search path"
+    );
+    assert!(
+        settings.contains("editor.tabSize"),
+        "preserves existing settings"
+    );
+}

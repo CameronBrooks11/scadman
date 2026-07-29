@@ -39,6 +39,7 @@ scadman lock                 # resolve dependencies → scadman.lock (exact rev 
 scadman sync                 # materialize the environment; warn about undeclared imports
 scadman run -- model.scad -o out.stl   # run OpenSCAD with the project's dependencies
 scadman remove BOSL2         # drop a dependency
+scadman doctor               # check OpenSCAD, store, manifest, lock, and environment
 ```
 
 `add` also accepts `--rev <commit>` or `--branch <name>` (branches are locked to a commit).
@@ -59,6 +60,10 @@ features resolve against the project's *pinned* dependency versions:
 ```sh
 export OPENSCADPATH="$(scadman env)"
 ```
+
+For VS Code, `scadman env --write-vscode` writes the path into `.vscode/settings.json` as
+`openscad.search_paths` (for [openscad-LSP](https://github.com/Leathong/openscad-LSP)),
+merging into any existing settings.
 
 ## How it works
 
