@@ -17,10 +17,19 @@ It models three distinct things instead of forcing everything into one "package"
 - **Package** — an artifact with an explicit contract: identity, version, license, declared roots, dependencies, integrity.
 - **Project** — a reproducible environment that consumes packages and raw artifacts via a manifest and an exact lockfile.
 
+## Install
+
+`v0.1.0-alpha`. With a recent Rust toolchain (≥ 1.85) and `git` + `openscad` on `PATH`:
+
+```sh
+cargo install --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha scadman-cli
+```
+
+This installs the `scadman` binary. (Or, from a clone: `cargo build --release`.)
+
 ## Usage
 
-Build the CLI with a recent Rust toolchain (`cargo build --release`; the binary is
-`scadman`), then, in a project directory:
+In a project directory:
 
 ```sh
 scadman init                 # create scadman.toml (and ignore .scadman/)
@@ -66,8 +75,18 @@ these choices are in [docs/](docs/) — see
 [DECISIONS.md](docs/DECISIONS.md), [ecosystem-survey.md](docs/ecosystem-survey.md), and
 [resolver-direction.md](docs/resolver-direction.md).
 
-## Status
+## Status & scope
 
-Early but usable end-to-end for git dependencies (`init → add → lock → sync → run`). A
-hosted registry, richer package metadata, and native OpenSCAD-editor integration are
-future work.
+**`v0.1.0-alpha`** — usable end-to-end for GitHub-hosted git dependencies
+(`init → add → lock → sync → run`), validated against real libraries (BOSL2, NopSCADlib,
+MCAD, dotSCAD, Round-Anything). Expect rough edges and breaking changes.
+
+Deliberate limitations for this alpha:
+
+- **GitHub-first.** Git sources only — no hosted registry; `path` and registry/version dependencies are not yet supported.
+- **One version per identity.** OpenSCAD's flat namespace means a project resolves a single version of each library (no coexisting versions).
+- **Lockfile hashes are per-OS.** A `scadman.lock` is reproducible across machines of the same OS; cross-OS sharing is not yet guaranteed.
+- **`on_path` libraries share a flat namespace.** Opting a dependency into `on_path` places its root on `OPENSCADPATH`; two such libraries with a same-named top-level file collide (scadman warns).
+- **No native OpenSCAD-GUI integration.** `OPENSCADPATH` is the integration seam (`scadman env`); GUI/registry work is future.
+
+Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md).
