@@ -713,9 +713,7 @@ fn warn_unmet_imports(lock: &Lockfile, env: &Environment) {
             path: env.root.join(&p.name),
         })
         .collect();
-    let provided: BTreeSet<String> = lock.packages.iter().map(|p| p.name.clone()).collect();
-
-    for unmet in unmet_imports(&installed, &provided) {
+    for unmet in unmet_imports(Path::new("."), &installed) {
         eprintln!(
             "warning: `{}` imports `{}/` (in {}) but it is not in your dependencies",
             unmet.package, unmet.library, unmet.file
