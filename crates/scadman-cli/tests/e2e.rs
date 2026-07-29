@@ -311,3 +311,40 @@ fn bosl2_renders_end_to_end() {
     );
     assert!(proj.join("out.stl").exists(), "BOSL2 should render an STL");
 }
+
+/// Real-ecosystem validation (#25): dotSCAD is src-layout and needs its `src/` on
+/// OPENSCADPATH; with `root = "src"` + `on_path = true` a deep module renders. Ignored
+/// (network + openscad); run with `cargo test -- --ignored`.
+#[test]
+#[ignore = "needs network + openscad; real-ecosystem validation"]
+fn dotscad_renders_with_root_and_on_path() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = project_with(
+        root.path(),
+        "[project]\nname = \"v\"\n\n[dependencies.dotSCAD]\ngit = \"https://github.com/JustinSDK/dotSCAD\"\nrev = \"bb33edfd75cba0edbb7971606a077b9c69d0b7d2\"\nroot = \"src\"\non_path = true\n",
+    );
+    fs::write(
+        proj.join("model.scad"),
+        "use <dotSCAD/line3d.scad>\nline3d([[0, 0, 0], [10, 0, 0], [10, 10, 5]], 2);\n",
+    )
+    .unwrap();
+    assert!(
+        scadman(&proj, store.path(), &["lock"]).status.success(),
+        "lock dotSCAD"
+    );
+    let run = scadman(
+        &proj,
+        store.path(),
+        &["run", "--", "-o", "out.stl", "model.scad"],
+    );
+    assert!(
+        run.status.success(),
+        "render: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        proj.join("out.stl").exists(),
+        "dotSCAD should render an STL"
+    );
+}

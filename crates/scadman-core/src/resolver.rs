@@ -69,6 +69,10 @@ pub struct Resolved {
     pub hash: String,
     /// Names of this package's direct dependencies (sorted).
     pub dependencies: Vec<String>,
+    /// Library-root subdir exposed under the package name (default `"."`).
+    pub root: String,
+    /// Whether the exposed root is also placed on `OPENSCADPATH`.
+    pub on_path: bool,
     /// The chain of names that first introduced this package (for conflict diagnostics).
     pub required_by: Vec<String>,
 }
@@ -93,6 +97,8 @@ impl ResolvedSet {
                     rev: p.rev.clone(),
                     hash: p.hash.clone(),
                     dependencies: p.dependencies.clone(),
+                    root: p.root.clone(),
+                    on_path: p.on_path,
                 })
                 .collect(),
         }
@@ -249,6 +255,17 @@ pub fn lock_staleness(manifest: &Manifest, lock: &Lockfile) -> Option<String> {
                         pkg.rev
                     ));
                 }
+                // Exposure knobs also affect the environment, so a change makes the lock stale.
+                let want_root = git.root.as_deref().unwrap_or(".");
+                if pkg.root != want_root {
+                    return Some(format!(
+                        "`{name}` library root changed ({} → {want_root})",
+                        pkg.root
+                    ));
+                }
+                if pkg.on_path != git.on_path {
+                    return Some(format!("`{name}` on_path changed to {}", git.on_path));
+                }
             }
         }
     }
@@ -382,6 +399,8 @@ impl Resolution<'_> {
                 rev: fetched.rev,
                 hash: fetched.hash,
                 dependencies: dep_names,
+                root: git.root.clone().unwrap_or_else(|| ".".to_string()),
+                on_path: git.on_path,
                 required_by: required_by.clone(),
             },
         );
@@ -709,6 +728,8 @@ mod tests {
                 rev: rev.to_string(),
                 hash: "h".to_string(),
                 dependencies: Vec::new(),
+                root: ".".to_string(),
+                on_path: false,
             });
             lock
         };
@@ -719,6 +740,24 @@ mod tests {
         assert!(lock_staleness(&root, &one("https://h/OTHER", "abc123")).is_some());
         // Same source but a different rev → stale.
         assert!(lock_staleness(&root, &one("https://h/A", "999999")).is_some());
+    }
+
+    #[test]
+    fn lock_staleness_detects_root_and_on_path_changes() {
+        let root = manifest(
+            "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"abc123\", root = \"src\", on_path = true }\n",
+        );
+        let mut lock = Lockfile::new();
+        lock.packages.push(LockedPackage {
+            name: "A".to_string(),
+            source: "https://h/A".to_string(),
+            rev: "abc123".to_string(),
+            hash: "h".to_string(),
+            dependencies: Vec::new(),
+            root: ".".to_string(), // manifest now wants `src` → stale
+            on_path: false,
+        });
+        assert!(lock_staleness(&root, &lock).is_some());
     }
 
     #[test]
@@ -733,6 +772,8 @@ mod tests {
                 rev: Some("r".to_string()),
                 tag: None,
                 branch: None,
+                root: None,
+                on_path: false,
             }),
         );
         let err = resolve(&root, &FakeFetcher::new()).unwrap_err();

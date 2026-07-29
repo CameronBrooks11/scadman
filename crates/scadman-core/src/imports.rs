@@ -29,9 +29,11 @@ use regex::Regex;
 static IMPORT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(?:use|include)\s*<([^>]*)>").unwrap());
 
-/// Top-level directories that hold a library's own examples/tests/docs rather than the
-/// code a consumer imports; their imports are not the user's dependencies.
-const NON_LIBRARY_DIRS: &[&str] = &["examples", "example", "test", "tests", "docs", "doc"];
+/// Directory names that hold a library's own examples/tests/docs rather than the code a
+/// consumer imports; their imports are not the user's dependencies. Matched at any depth.
+const NON_LIBRARY_DIRS: &[&str] = &[
+    "examples", "example", "test", "tests", "docs", "doc", "demo", "demos",
+];
 
 /// An installed package to scan: the name it is exposed under and its content root.
 pub struct Installed {
@@ -120,9 +122,10 @@ fn collect_scad_into(dir: &Path, prefix: &str, out: &mut BTreeSet<String>) {
 }
 
 fn in_non_library_dir(rel: &str) -> bool {
-    rel.split('/')
-        .next()
-        .is_some_and(|top| NON_LIBRARY_DIRS.contains(&top))
+    // Only directory components count — the file's own basename is excluded.
+    let mut components: Vec<&str> = rel.split('/').collect();
+    components.pop();
+    components.iter().any(|c| NON_LIBRARY_DIRS.contains(c))
 }
 
 /// If `target` (imported from `importer`) names a library the package does not itself

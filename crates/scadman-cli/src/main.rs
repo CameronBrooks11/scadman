@@ -47,6 +47,13 @@ enum Command {
         /// Track a branch (locked to a commit at lock time).
         #[arg(long)]
         branch: Option<String>,
+        /// Library-root subdir to expose (for libraries whose code lives under e.g. `src/`).
+        #[arg(long)]
+        root: Option<String>,
+        /// Also place the exposed root on OPENSCADPATH (opt in for libraries like dotSCAD
+        /// whose files import from their own root).
+        #[arg(long)]
+        on_path: bool,
     },
     /// Remove a dependency from scadman.toml.
     Remove {
@@ -82,7 +89,9 @@ fn main() -> Result<()> {
             rev,
             tag,
             branch,
-        } => add_cmd(name, git, rev, tag, branch),
+            root,
+            on_path,
+        } => add_cmd(name, git, rev, tag, branch, root, on_path),
         Command::Remove { name } => remove_cmd(name),
         Command::List => list_cmd(),
         Command::Lock => lock_cmd(),
@@ -202,9 +211,14 @@ fn short(rev: &str) -> &str {
 fn env_cmd(json: bool) -> Result<()> {
     let store = open_store()?;
     let (lock, env) = prepare_environment(&store)?;
+    let openscadpath = env
+        .openscad_path_value()
+        .context("assemble OPENSCADPATH")?
+        .to_string_lossy()
+        .into_owned();
     if json {
         let report = EnvReport {
-            openscadpath: env.root.display().to_string(),
+            openscadpath,
             packages: lock
                 .packages
                 .iter()
@@ -213,13 +227,13 @@ fn env_cmd(json: bool) -> Result<()> {
                     source: p.source.clone(),
                     rev: p.rev.clone(),
                     hash: p.hash.clone(),
-                    store_path: store.path_for(&p.hash).display().to_string(),
+                    store_path: store.path_for(&p.hash).join(&p.root).display().to_string(),
                 })
                 .collect(),
         };
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        println!("{}", env.root.display());
+        println!("{openscadpath}");
     }
     Ok(())
 }
@@ -240,15 +254,18 @@ struct EnvPackage {
     store_path: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_cmd(
     name: String,
     git: String,
     rev: Option<String>,
     tag: Option<String>,
     branch: Option<String>,
+    root: Option<String>,
+    on_path: bool,
 ) -> Result<()> {
     let mut manifest = load_manifest()?;
-    let updated = add_dependency(&mut manifest, &name, git, rev, tag, branch)?;
+    let updated = add_dependency(&mut manifest, &name, git, rev, tag, branch, root, on_path)?;
     let text = manifest.to_toml().context("serialize manifest")?;
     fs::write(manifest::MANIFEST_FILE, text)
         .with_context(|| format!("write {}", manifest::MANIFEST_FILE))?;
@@ -262,6 +279,7 @@ fn add_cmd(
 
 /// Insert (or replace) a git dependency in the manifest. Returns whether an existing entry
 /// was replaced. Exactly one of `rev`/`tag`/`branch` must be given.
+#[allow(clippy::too_many_arguments)]
 fn add_dependency(
     manifest: &mut Manifest,
     name: &str,
@@ -269,8 +287,13 @@ fn add_dependency(
     rev: Option<String>,
     tag: Option<String>,
     branch: Option<String>,
+    root: Option<String>,
+    on_path: bool,
 ) -> Result<bool> {
     manifest::validate_package_name(name).map_err(|e| anyhow::anyhow!(e))?;
+    if let Some(root) = &root {
+        manifest::validate_library_root(root).map_err(|e| anyhow::anyhow!(e))?;
+    }
     let refs = [&rev, &tag, &branch].iter().filter(|r| r.is_some()).count();
     if refs != 1 {
         bail!("specify exactly one of --rev, --tag, or --branch");
@@ -280,6 +303,8 @@ fn add_dependency(
         rev,
         tag,
         branch,
+        root,
+        on_path,
     });
     Ok(manifest
         .dependencies
@@ -308,7 +333,41 @@ fn prepare_environment(store: &Store) -> Result<(Lockfile, Environment)> {
     ensure_stored(&lock, store)?;
     let env = build_environment(&lock, store, &env_root()?).context("build environment")?;
     warn_unmet_imports(&lock, &env);
+    warn_on_path_collisions(&env);
     Ok((lock, env))
+}
+
+/// Warn if two `on_path` libraries expose a top-level file of the same name — a bare
+/// import of it is ambiguous (the flat-namespace risk `on_path` opts into).
+fn warn_on_path_collisions(env: &Environment) {
+    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+    // openscad_path[0] is the env root; the rest are the on_path package dirs.
+    for dir in env.openscad_path.iter().skip(1) {
+        let label = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let file = entry.file_name();
+            let Some(file) = file.to_str() else { continue };
+            if !file.ends_with(".scad") {
+                continue;
+            }
+            match seen.get(file) {
+                Some(prev) if prev != &label => eprintln!(
+                    "warning: on-path libraries `{prev}` and `{label}` both provide `{file}` — a bare import is ambiguous"
+                ),
+                Some(_) => {}
+                None => {
+                    seen.insert(file.to_string(), label.clone());
+                }
+            }
+        }
+    }
 }
 
 fn sync_cmd() -> Result<Environment> {
@@ -325,11 +384,12 @@ fn sync_cmd() -> Result<Environment> {
 fn run_cmd(args: Vec<String>) -> Result<()> {
     let store = open_store()?;
     let (_, env) = prepare_environment(&store)?;
-    // Point OPENSCADPATH at the project env so declared dependencies shadow globals.
-    // (OPENSCADPATH adds to the search path — OpenSCAD still searches its built-in user
-    // and install library dirs — so the include-scan is what surfaces undeclared imports.)
+    // Point OPENSCADPATH at the project env (plus any on_path library roots) so declared
+    // dependencies shadow globals. (OpenSCAD still searches its built-in user/install
+    // dirs — the include-scan surfaces undeclared imports.)
+    let openscadpath = env.openscad_path_value().context("assemble OPENSCADPATH")?;
     let status = ProcCommand::new("openscad")
-        .env("OPENSCADPATH", &env.root)
+        .env("OPENSCADPATH", &openscadpath)
         .args(&args)
         .status()
         .context("launch openscad (is it on PATH?)")?;
@@ -451,7 +511,7 @@ mod tests {
     #[test]
     fn add_dependency_requires_exactly_one_ref() {
         let mut m = Manifest::new("p");
-        assert!(add_dependency(&mut m, "A", "u".into(), None, None, None).is_err());
+        assert!(add_dependency(&mut m, "A", "u".into(), None, None, None, None, false).is_err());
         assert!(
             add_dependency(
                 &mut m,
@@ -459,37 +519,49 @@ mod tests {
                 "u".into(),
                 Some("r".into()),
                 Some("t".into()),
-                None
+                None,
+                None,
+                false,
             )
             .is_err()
         );
     }
 
     #[test]
-    fn add_dependency_inserts_then_updates() {
+    fn add_dependency_records_root_and_on_path() {
         let mut m = Manifest::new("p");
-        let url = "https://github.com/BelfrySCAD/BOSL2".to_string();
-
-        let existed = add_dependency(
+        let url = "https://github.com/JustinSDK/dotSCAD".to_string();
+        add_dependency(
             &mut m,
-            "BOSL2",
-            url.clone(),
+            "dotSCAD",
+            url,
+            Some("abc123".into()),
             None,
-            Some("v2.0".into()),
             None,
+            Some("src".into()),
+            true,
         )
         .unwrap();
-        assert!(!existed);
-        match &m.dependencies["BOSL2"] {
+        match &m.dependencies["dotSCAD"] {
             Dependency::Git(g) => {
-                assert_eq!(g.git, url);
-                assert_eq!(g.tag.as_deref(), Some("v2.0"));
+                assert_eq!(g.root.as_deref(), Some("src"));
+                assert!(g.on_path);
             }
             other => panic!("expected git dependency, got {other:?}"),
         }
-
-        let existed =
-            add_dependency(&mut m, "BOSL2", url, Some("abc123".into()), None, None).unwrap();
-        assert!(existed);
+        // A traversing library root is rejected.
+        assert!(
+            add_dependency(
+                &mut m,
+                "bad",
+                "u".into(),
+                Some("r".into()),
+                None,
+                None,
+                Some("../etc".into()),
+                false,
+            )
+            .is_err()
+        );
     }
 }
