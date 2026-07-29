@@ -20,13 +20,10 @@ pub struct Manifest {
     pub dependencies: BTreeMap<String, Dependency>,
 }
 
-/// Project identity and compatibility.
+/// Project identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
-    /// Optional OpenSCAD version constraint (e.g. `">=2021.01"`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub openscad: Option<String>,
 }
 
 /// A single dependency, accepting either a bare version string or a detailed table.
@@ -108,10 +105,7 @@ impl Manifest {
     /// A fresh manifest for a project with the given name and no dependencies.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            project: Project {
-                name: name.into(),
-                openscad: None,
-            },
+            project: Project { name: name.into() },
             dependencies: BTreeMap::new(),
         }
     }
@@ -150,8 +144,9 @@ BOSL2 = "^2.0"
 Round-Anything = { git = "https://github.com/Irev-Dev/Round-Anything", rev = "061fef7" }
 local-lib = { path = "../local-lib" }
 "#;
+        // A legacy `openscad` key under [project] is tolerated (ignored), not an error.
         let m = Manifest::from_toml(text).expect("parse");
-        assert_eq!(m.project.openscad.as_deref(), Some(">=2021.01"));
+        assert_eq!(m.project.name, "enclosure");
         assert_eq!(
             m.dependencies["BOSL2"],
             Dependency::Version("^2.0".to_string())
