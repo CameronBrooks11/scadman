@@ -27,10 +27,12 @@ hardened, and CI-green. This roadmap reflects that and prioritizes what makes it
 2. **First alpha release** — [#22] · S. Tag `v0.1.0-alpha`, document install, optionally a
    CI release binary. Ship something *proven* (do after #21).
 
-## Open decisions
+## Resolved decisions
 
-- **Dead `project.openscad` field** — [#23]. Wire a minimal OpenSCAD-version check or drop
-  it from the schema so it stops promising nothing.
+- **`project.openscad` field** — [#23] **dropped**. It was parsed but never used (a schema
+  lie). A real check needs parsing OpenSCAD's date-based/nightly version strings, and the
+  survey found compatibility is *feature*-based (version numbers are a weak signal). To be
+  reintroduced with a real feature/version check (at `run`/`doctor`) post-alpha.
 
 ## Deferred / blocked
 
