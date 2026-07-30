@@ -36,6 +36,7 @@ scadman init                 # create scadman.toml (and ignore .scadman/)
 scadman add BOSL2 https://github.com/BelfrySCAD/BOSL2 --tag v2.0.700
 scadman list                 # show declared dependencies and their locked state
 scadman lock                 # resolve dependencies → scadman.lock (exact rev + content hash)
+scadman update [name…]       # advance branch/tag deps to newer commits (all, or just some)
 scadman sync                 # materialize the environment; warn about undeclared imports
 scadman run -- model.scad -o out.stl   # run OpenSCAD with the project's dependencies
 scadman remove BOSL2         # drop a dependency
@@ -45,7 +46,11 @@ scadman doctor               # check OpenSCAD, store, manifest, lock, and enviro
 
 `add` also accepts `--rev <commit>` or `--branch <name>` (branches are locked to a commit).
 Because most OpenSCAD libraries don't publish releases, an exact git revision is a
-first-class dependency form, not an afterthought.
+first-class dependency form, not an afterthought. A branch/tag dependency is pinned at lock
+time; advance it later with `scadman update` (all deps) or `scadman update <name>` (just
+one, holding the rest) — it reports which commits moved. Exact `rev` pins never move.
+(Re-running `scadman lock` also re-resolves and advances branch/tag deps; `update` adds
+selective advancement, a delta report, and — via `update <name>` — leaving the others put.)
 
 To co-develop a project alongside a local library, depend on it by path instead of a git
 source:

@@ -1,6 +1,6 @@
 //! The `scadman` command-line interface.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -10,8 +10,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use scadman_core::{
     Dependency, Environment, Fetched, Fetcher, GitDependency, GitFetcher, Installed, Lockfile,
-    Manifest, Store, build_environment, fetch_git, lock_staleness, lockfile, manifest, resolve,
-    unmet_imports,
+    Manifest, Store, build_environment, canonical_url, fetch_git, lock_staleness, lockfile,
+    manifest, resolve, unmet_imports,
 };
 use serde::Serialize;
 
@@ -70,6 +70,15 @@ enum Command {
     List,
     /// Resolve dependencies and write scadman.lock.
     Lock,
+    /// Advance dependencies to newer commits and rewrite scadman.lock, reporting what moved.
+    ///
+    /// With no arguments, re-resolves every dependency (branch/tag deps move to the current
+    /// tip; exact `rev` pins can't move). With names, advances only those and holds the rest
+    /// at their locked revisions.
+    Update {
+        /// Dependencies to advance (default: all).
+        names: Vec<String>,
+    },
     /// Materialize the project environment from the lockfile (resolving if needed).
     Sync,
     /// Print the project's OPENSCADPATH (point your editor/OpenSCAD at it).
@@ -113,6 +122,7 @@ fn main() -> Result<()> {
         Command::Remove { name } => remove_cmd(name),
         Command::List => list_cmd(),
         Command::Lock => lock_cmd(),
+        Command::Update { names } => update_cmd(names),
         Command::Sync => sync_cmd().map(|_| ()),
         Command::Env { json, write_vscode } => env_cmd(json, write_vscode),
         Command::Doctor => doctor_cmd(),
@@ -343,6 +353,16 @@ fn doctor_cmd() -> Result<()> {
 
     if let Some(m) = &manifest {
         report_lockfile(m);
+        let tracking = m
+            .dependencies
+            .values()
+            .filter(|d| matches!(d, Dependency::Git(g) if g.branch.is_some() || g.tag.is_some()))
+            .count();
+        if tracking > 0 {
+            println!(
+                "tracking:     {tracking} dependency(ies) track a branch/tag — `scadman update` to advance"
+            );
+        }
     }
 
     let env_dir = env_root()?;
@@ -584,6 +604,100 @@ fn lock_cmd() -> Result<()> {
     Ok(())
 }
 
+/// Advance dependencies to newer commits, holding the ones not named at their locked revs,
+/// and report what moved. `names` empty means advance all.
+fn update_cmd(names: Vec<String>) -> Result<()> {
+    let manifest = load_manifest()?;
+    let store = open_store()?;
+    let base = std::env::current_dir().context("determine project directory")?;
+    let previous = read_lockfile_opt()?;
+
+    let updated = if names.is_empty() {
+        // Advance everything — a full fresh re-resolve, identical to `scadman lock` (which
+        // already moves branch/tag deps, transitive ones included), plus a delta report.
+        resolve_lock(&manifest, &store)?
+    } else {
+        // Advance only the named deps; hold the rest at their locked revisions. Named deps
+        // must exist and be git sources (a path dep is re-read on every sync, not "updated";
+        // a rev pin is accepted but simply can't move).
+        let mut refresh = HashSet::new();
+        for name in &names {
+            match manifest.dependencies.get(name) {
+                Some(Dependency::Git(g)) => {
+                    refresh.insert(canonical_url(&g.git));
+                }
+                Some(Dependency::Path(_)) => bail!(
+                    "`{name}` is a path dependency — its content is re-read on every `sync`, not updated"
+                ),
+                Some(Dependency::Version(_)) => {
+                    bail!(
+                        "`{name}` is a registry (version) dependency, which needs a registry (not in v1)"
+                    )
+                }
+                None => bail!(
+                    "`{name}` is not a dependency in {}",
+                    manifest::MANIFEST_FILE
+                ),
+            }
+        }
+        let base_lock = previous.clone().unwrap_or_else(Lockfile::new);
+        let fetcher = CachedGitFetcher::new(&store, &base_lock, refresh);
+        resolve(&manifest, &base, &fetcher)
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .to_lockfile()
+    };
+
+    write_lock(&updated)?;
+    report_update(previous.as_ref(), &updated);
+    Ok(())
+}
+
+/// Read `scadman.lock` if it exists and parses (else `None`).
+fn read_lockfile_opt() -> Result<Option<Lockfile>> {
+    if !Path::new(lockfile::LOCKFILE_FILE).exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(lockfile::LOCKFILE_FILE)?;
+    Ok(Some(Lockfile::from_toml(&text).with_context(|| {
+        format!("parse {}", lockfile::LOCKFILE_FILE)
+    })?))
+}
+
+/// Print the per-package rev deltas between the previous lock and the updated one.
+fn report_update(previous: Option<&Lockfile>, updated: &Lockfile) {
+    let prior = |name: &str| previous.and_then(|l| l.packages.iter().find(|p| p.name == name));
+    let mut moved = 0;
+    for pkg in &updated.packages {
+        match prior(&pkg.name) {
+            Some(before) if before.rev != pkg.rev => {
+                println!(
+                    "Updated {}: {} → {}",
+                    pkg.name,
+                    short(&before.rev),
+                    short(&pkg.rev)
+                );
+                moved += 1;
+            }
+            Some(_) => {}
+            None => {
+                println!("Added {} @ {}", pkg.name, short(&pkg.rev));
+                moved += 1;
+            }
+        }
+    }
+    if let Some(previous) = previous {
+        for before in &previous.packages {
+            if !updated.packages.iter().any(|p| p.name == before.name) {
+                println!("Removed {}", before.name);
+                moved += 1;
+            }
+        }
+    }
+    if moved == 0 {
+        println!("Already up to date.");
+    }
+}
+
 /// Resolve-or-read the lock, ensure content is stored, build the environment, and warn
 /// about undeclared imports (to stderr). Prints nothing to stdout, so `env` can emit only
 /// its report.
@@ -702,10 +816,13 @@ struct CachedGitFetcher {
     store: Store,
     /// Git identity (canonical URL) → its locked `(rev, hash)`.
     locked: HashMap<String, (String, String)>,
+    /// Git identities to force a fresh fetch for, bypassing the cache — how `scadman update`
+    /// advances selected deps (empty for a path-triggered refresh, which holds all git deps).
+    refresh: HashSet<String>,
 }
 
 impl CachedGitFetcher {
-    fn new(store: &Store, lock: &Lockfile) -> Self {
+    fn new(store: &Store, lock: &Lockfile, refresh: HashSet<String>) -> Self {
         let locked = lock
             .packages
             .iter()
@@ -716,13 +833,17 @@ impl CachedGitFetcher {
             inner: GitFetcher::new(store.clone()),
             store: store.clone(),
             locked,
+            refresh,
         }
     }
 }
 
 impl Fetcher for CachedGitFetcher {
     fn fetch(&self, url: &str, reference: &str) -> io::Result<Fetched> {
-        if let Some((rev, hash)) = self.locked.get(url) {
+        if !self.refresh.contains(url)
+            && let Some((rev, hash)) = self.locked.get(url)
+            && holds_reference(reference, rev)
+        {
             let path = self.store.path_for(hash);
             if path.exists() {
                 return Ok(Fetched {
@@ -738,6 +859,17 @@ impl Fetcher for CachedGitFetcher {
     fn fetch_path(&self, dir: &Path) -> io::Result<Fetched> {
         self.inner.fetch_path(dir)
     }
+}
+
+/// Whether serving the locked commit `rev` satisfies a request for `reference`, i.e. the
+/// cache may hold this dep rather than re-fetch. A branch/tag name is intentionally held at
+/// its locked commit (scadman doesn't chase upstream movement unless the dep is named for
+/// `update`). But a request for a *different exact commit* — a changed `rev` pin, e.g. a
+/// transitive dep whose parent moved — must be honored, or the lock would record a commit
+/// its requester no longer asks for.
+fn holds_reference(reference: &str, rev: &str) -> bool {
+    let is_commit = reference.len() >= 7 && reference.chars().all(|c| c.is_ascii_hexdigit());
+    !is_commit || rev.starts_with(reference)
 }
 
 fn read_or_lock(store: &Store) -> Result<Lockfile> {
@@ -772,7 +904,7 @@ fn read_or_lock(store: &Store) -> Result<Lockfile> {
                     manifest::MANIFEST_FILE
                 );
             }
-            let fetcher = CachedGitFetcher::new(store, &lock);
+            let fetcher = CachedGitFetcher::new(store, &lock, HashSet::new());
             let base = std::env::current_dir().context("determine project directory")?;
             let refreshed = resolve(&manifest, &base, &fetcher)
                 .map_err(|e| anyhow::anyhow!("{e}"))?
@@ -861,6 +993,23 @@ fn current_dir_name() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn holds_reference_holds_branches_but_honors_changed_pins() {
+        let rev = "061fef7abc0000000000000000000000000000ab";
+        // Branch/tag names are held at the locked commit.
+        assert!(holds_reference("main", rev));
+        assert!(holds_reference("v2.0.700", rev));
+        // The same exact pin (full or abbreviated) is held — no needless re-fetch.
+        assert!(holds_reference(rev, rev));
+        assert!(holds_reference("061fef7", rev));
+        // A different exact commit must NOT be held — it has to be re-fetched.
+        assert!(!holds_reference(
+            "deadbeef1234567890000000000000000000cafe",
+            rev
+        ));
+        assert!(!holds_reference("deadbee", rev));
+    }
 
     #[test]
     fn add_dependency_requires_exactly_one_ref() {
