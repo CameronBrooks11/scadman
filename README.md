@@ -19,10 +19,10 @@ It models three distinct things instead of forcing everything into one "package"
 
 ## Install
 
-`v0.1.0-alpha`. With a recent Rust toolchain (≥ 1.85) and `git` + `openscad` on `PATH`:
+`v0.1.0-alpha.2`. With a recent Rust toolchain (≥ 1.85) and `git` + `openscad` on `PATH`:
 
 ```sh
-cargo install --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha scadman-cli
+cargo install --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha.2 scadman-cli
 ```
 
 This installs the `scadman` binary. (Or, from a clone: `cargo build --release`.)
@@ -128,9 +128,10 @@ these choices are in [docs/](docs/) — see
 
 ## Status & scope
 
-**`v0.1.0-alpha`** — usable end-to-end for GitHub-hosted git dependencies
-(`init → add → lock → sync → run`), validated against real libraries (BOSL2, NopSCADlib,
-MCAD, dotSCAD, Round-Anything). Expect rough edges and breaking changes.
+**`v0.1.0-alpha.2`** — usable end-to-end for GitHub-hosted git and local `path` dependencies
+(`init → add → lock → update → sync → run`), validated against real libraries (BOSL2,
+NopSCADlib, MCAD, dotSCAD, Round-Anything) and a 12-project dogfooding pass. Expect rough
+edges and breaking changes.
 
 Deliberate limitations for this alpha:
 
