@@ -24,6 +24,12 @@ pub struct Manifest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
+    /// Minimum OpenSCAD version the project needs, e.g. `"2021.01"` (a leading `>=` is
+    /// accepted). scadman warns at `doctor`/`run` when the installed OpenSCAD is older.
+    /// OpenSCAD compatibility is really feature-based (see `docs/ecosystem-survey.md`), so
+    /// this is an advisory floor, not a guarantee.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openscad: Option<String>,
 }
 
 /// A single dependency, accepting either a bare version string or a detailed table.
@@ -106,11 +112,58 @@ pub fn validate_library_root(root: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Parse the leading dotted-numeric run of a version string — e.g. `[2021, 1]` from
+/// `"OpenSCAD version 2021.01 (git abc)"` or from a requirement like `">=2021.01"`.
+pub fn parse_version(s: &str) -> Option<Vec<u32>> {
+    let run: String = s
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let nums: Vec<u32> = run
+        .split('.')
+        .filter(|p| !p.is_empty())
+        .map_while(|p| p.parse().ok())
+        .collect();
+    (!nums.is_empty()).then_some(nums)
+}
+
+/// Parse a project's `openscad` requirement into a minimum version. Only a bare version
+/// (`"2021.01"`) or a `>=`/`>` prefix is recognized; anything else (`^`, `<`, `~>`, ranges)
+/// returns `None` so the caller can flag it rather than silently treat it as a minimum.
+pub fn parse_requirement(required: &str) -> Option<Vec<u32>> {
+    let rest = required.trim();
+    let rest = rest
+        .strip_prefix(">=")
+        .or_else(|| rest.strip_prefix('>'))
+        .unwrap_or(rest)
+        .trim();
+    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    parse_version(rest)
+}
+
+/// Whether an `installed` OpenSCAD version string satisfies the `required` minimum. `None`
+/// if the installed version can't be parsed or the requirement is unrecognized (see
+/// [`parse_requirement`]).
+pub fn meets_openscad_requirement(installed: &str, required: &str) -> Option<bool> {
+    let mut have = parse_version(installed)?;
+    let mut need = parse_requirement(required)?;
+    let len = have.len().max(need.len());
+    have.resize(len, 0);
+    need.resize(len, 0);
+    Some(have >= need)
+}
+
 impl Manifest {
     /// A fresh manifest for a project with the given name and no dependencies.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            project: Project { name: name.into() },
+            project: Project {
+                name: name.into(),
+                openscad: None,
+            },
             dependencies: BTreeMap::new(),
         }
     }
@@ -138,6 +191,64 @@ mod tests {
     }
 
     #[test]
+    fn parses_openscad_versions_from_messy_strings() {
+        assert_eq!(
+            parse_version("OpenSCAD version 2021.01"),
+            Some(vec![2021, 1])
+        );
+        assert_eq!(
+            parse_version("OpenSCAD version 2023.10.30 (git 1a2b3c)"),
+            Some(vec![2023, 10, 30])
+        );
+        assert_eq!(parse_version(">=2021.01"), Some(vec![2021, 1]));
+        assert_eq!(parse_version("2019.05"), Some(vec![2019, 5]));
+        assert_eq!(parse_version("no digits here"), None);
+    }
+
+    #[test]
+    fn openscad_requirement_comparison() {
+        // Met: same, newer year, newer month, extra patch component.
+        assert_eq!(meets_openscad_requirement("2021.01", "2021.01"), Some(true));
+        assert_eq!(meets_openscad_requirement("2023.06", "2021.01"), Some(true));
+        assert_eq!(meets_openscad_requirement("2021.03", "2021.01"), Some(true));
+        assert_eq!(
+            meets_openscad_requirement("OpenSCAD version 2021.01.5", "2021.01"),
+            Some(true)
+        );
+        // Unmet: older month, older year.
+        assert_eq!(
+            meets_openscad_requirement("2020.12", "2021.01"),
+            Some(false)
+        );
+        assert_eq!(
+            meets_openscad_requirement("2019.05", ">=2021.01"),
+            Some(false)
+        );
+        // Leading-zero month ordering: `2021.01` (Jan) is below `2021.10` (Oct).
+        assert_eq!(
+            meets_openscad_requirement("2021.01", "2021.10"),
+            Some(false)
+        );
+        assert_eq!(meets_openscad_requirement("2021.10", "2021.01"), Some(true));
+        // `2021.1` and `2021.01` are the same version (month 1).
+        assert_eq!(meets_openscad_requirement("2021.1", "2021.01"), Some(true));
+        // Unparseable installed / unrecognized requirement → can't decide.
+        assert_eq!(meets_openscad_requirement("dev", "2021.01"), None);
+        assert_eq!(meets_openscad_requirement("2021.01", "^2021.01"), None);
+    }
+
+    #[test]
+    fn parse_requirement_only_accepts_bare_or_ge() {
+        assert_eq!(parse_requirement("2021.01"), Some(vec![2021, 1]));
+        assert_eq!(parse_requirement(">=2021.01"), Some(vec![2021, 1]));
+        assert_eq!(parse_requirement("> 2021.01"), Some(vec![2021, 1]));
+        // Unsupported operators / ranges are rejected, not silently treated as a minimum.
+        for bad in ["^2021.01", "<2021.01", "~>2021", "2021.01 || 2022.0", ""] {
+            assert_eq!(parse_requirement(bad), None, "should reject `{bad}`");
+        }
+    }
+
+    #[test]
     fn parses_all_dependency_forms() {
         let text = r#"
 [project]
@@ -149,9 +260,9 @@ BOSL2 = "^2.0"
 Round-Anything = { git = "https://github.com/Irev-Dev/Round-Anything", rev = "061fef7" }
 local-lib = { path = "../local-lib" }
 "#;
-        // A legacy `openscad` key under [project] is tolerated (ignored), not an error.
         let m = Manifest::from_toml(text).expect("parse");
         assert_eq!(m.project.name, "enclosure");
+        assert_eq!(m.project.openscad.as_deref(), Some(">=2021.01"));
         assert_eq!(
             m.dependencies["BOSL2"],
             Dependency::Version("^2.0".to_string())

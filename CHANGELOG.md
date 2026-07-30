@@ -8,6 +8,10 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ### Added
 
+- **Minimum OpenSCAD version** — declare `openscad = "2021.01"` under `[project]` (a leading
+  `>=` is accepted) and scadman warns at `doctor` and `run` when the installed OpenSCAD is
+  older. Advisory only; OpenSCAD compatibility is really feature-based.
+
 - **`scadman update [name…]`** — advance dependencies to newer commits and report what
   moved. With no arguments it re-resolves everything (like `scadman lock`, but with a delta
   report); with names it advances only those and holds the rest at their locked revisions
