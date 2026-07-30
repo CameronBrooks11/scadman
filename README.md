@@ -51,6 +51,11 @@ Libraries whose code lives under a subdir (e.g. `src/`) and import from that roo
 dotSCAD — are added with `--root src --on-path` (see
 [docs/library-roots.md](docs/library-roots.md)).
 
+Many libraries pull in others without declaring it (e.g. `threadlib` uses `scad-utils`).
+`sync` follows your project's imports into each dependency and warns about any *undeclared*
+library they pull in, naming which library is missing — `scadman add <name> <url>` each,
+then `lock`/`sync` again.
+
 ### Editor integration
 
 `scadman env` prints the project's `OPENSCADPATH`, and `scadman env --json` emits a
