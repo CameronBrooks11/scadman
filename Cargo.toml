@@ -18,5 +18,4 @@ anyhow = "1"
 sha2 = "0.10"
 regex = "1"
 tempfile = "3"
-unicode-normalization = "0.1"
 scadman-core = { path = "crates/scadman-core" }

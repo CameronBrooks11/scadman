@@ -120,7 +120,7 @@ Deliberate limitations for this alpha:
 - **GitHub-first.** Git sources plus local `path` dependencies (for co-developing a sibling library); no hosted registry, and registry/version dependencies are not yet supported.
 - **Path dependencies are local, not reproducible.** They track a directory's current content and are re-read each `sync`; a lockfile that references one is not portable to another machine.
 - **One version per identity.** OpenSCAD's flat namespace means a project resolves a single version of each library (no coexisting versions).
-- **Cross-OS lockfiles (Unix).** The content hash is independent of path separators, Unicode normalization (NFC), and file mode, so a `scadman.lock` is reproducible across Linux and macOS. Windows isn't supported yet; and git's `core.autocrlf` can still change file *content* line-endings across machines (a git-config concern, not scadman's).
+- **Cross-OS lockfiles (Unix).** scadman runs on Unix; the content hash uses `/` and does not hash file mode, so a `scadman.lock` is reproducible across Linux and macOS for typical content. Two residual, git-config-dependent hazards can still change the hash: a filename differing only by Unicode normalization form (git's default `core.precomposeUnicode` avoids this on macOS) and `core.autocrlf` line-ending conversion (which rewrites file *content*). Windows isn't supported yet.
 - **`on_path` libraries share a flat namespace.** Opting a dependency into `on_path` places its root on `OPENSCADPATH`; two such libraries with a same-named top-level file collide (scadman warns).
 - **No native OpenSCAD-GUI integration.** `OPENSCADPATH` is the integration seam (`scadman env`); GUI/registry work is future.
 

@@ -6,7 +6,6 @@
 //! leave a half-written entry that looks complete. Project environments link into the
 //! store rather than copying (a later slice).
 
-use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
@@ -14,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
-use unicode_normalization::UnicodeNormalization;
 
 /// Per-process counter making each staging directory name unique, so concurrent
 /// inserts of identical content never share (and clobber) a staging path.
@@ -97,30 +95,29 @@ impl Store {
     }
 }
 
-/// A deterministic, OS-independent content hash of a directory tree.
+/// A deterministic content hash of a directory tree.
 ///
-/// Each file contributes its relative path, a NUL separator, the content byte length, and
-/// the content bytes — so both content and layout matter. Files are hashed in sorted
-/// path-component order. To keep the hash portable across machines and filesystems, the
-/// path is serialized canonically: components joined with `/` (not the OS separator), and
-/// each component Unicode-normalized to NFC — so a name a macOS filesystem presents as NFD
-/// hashes identically to the NFC form Linux uses. File mode (the executable bit) is not
-/// hashed, so a checkout that flips it doesn't perturb the hash. A nested `.git` directory
-/// is ignored, so a Git checkout hashes to its working-tree content alone.
+/// Files are hashed in sorted relative-path order; each contributes its path, a NUL
+/// separator, the content byte length, and the content bytes — so both content and layout
+/// matter. Paths are hashed as their raw OS bytes (names differing only in invalid UTF-8
+/// stay distinct), and a nested `.git` directory is ignored, so a Git checkout hashes to
+/// its working-tree content alone.
 ///
-/// For ASCII names — effectively all OpenSCAD content — this is byte-identical to a plain
-/// `/`-joined path, so the scheme is unchanged for existing lockfiles. A component that is
-/// not valid UTF-8 (pathological) can't be normalized and is hashed as its raw bytes.
+/// The hash is reproducible across the Unix platforms scadman runs on (Linux and macOS):
+/// both use `/` as the path separator, and file mode is not hashed. Two residual cross-OS
+/// hazards are git-config concerns, not the hash's: a filename differing only by Unicode
+/// normalization form (NFC vs NFD) — which git's default `core.precomposeUnicode` avoids on
+/// macOS — and `core.autocrlf`, which rewrites file *content* line endings. Windows is not
+/// supported (this uses the Unix byte view of paths).
 pub fn content_hash(dir: &Path) -> io::Result<String> {
     let mut files = Vec::new();
-    collect_files(dir, &[], &mut files)?;
-    // Sort by canonical components (component-wise, matching path ordering).
-    files.sort_by(|a, b| a.canonical.cmp(&b.canonical));
+    collect_files(dir, PathBuf::new(), &mut files)?;
+    files.sort();
 
     let mut hasher = Sha256::new();
-    for file in files {
-        let bytes = fs::read(&file.real)?;
-        hasher.update(join_slash(&file.canonical));
+    for rel in files {
+        let bytes = fs::read(dir.join(&rel))?;
+        hasher.update(rel.as_os_str().as_bytes());
         hasher.update([0u8]);
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
@@ -128,22 +125,8 @@ pub fn content_hash(dir: &Path) -> io::Result<String> {
     Ok(hex(&hasher.finalize()))
 }
 
-/// One collected file: its real on-disk path (for reading) and the canonical,
-/// NFC-normalized components used for hashing.
-struct CollectedFile {
-    real: PathBuf,
-    canonical: Vec<Vec<u8>>,
-}
-
-/// Walk `dir` (the real on-disk directory), accumulating each file's canonical components in
-/// `canon_prefix`. The filesystem is navigated with real names; only the hashed form is
-/// normalized — so an NFD name on disk is read correctly but hashed as NFC.
-fn collect_files(
-    dir: &Path,
-    canon_prefix: &[Vec<u8>],
-    out: &mut Vec<CollectedFile>,
-) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
+fn collect_files(base: &Path, rel: PathBuf, out: &mut Vec<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(base.join(&rel))? {
         let entry = entry?;
         let name = entry.file_name();
         if name == ".git" {
@@ -155,37 +138,14 @@ fn collect_files(
         if file_type.is_symlink() {
             continue;
         }
-        let mut canonical = canon_prefix.to_vec();
-        canonical.push(canonical_component(&name));
-        let real = dir.join(&name);
+        let child = rel.join(&name);
         if file_type.is_dir() {
-            collect_files(&real, &canonical, out)?;
+            collect_files(base, child, out)?;
         } else {
-            out.push(CollectedFile { real, canonical });
+            out.push(child);
         }
     }
     Ok(())
-}
-
-/// A path component in canonical byte form: NFC-normalized UTF-8 if the name is valid
-/// UTF-8, else its raw bytes (an un-normalizable, non-UTF-8 name stays distinct).
-fn canonical_component(name: &OsStr) -> Vec<u8> {
-    match name.to_str() {
-        Some(s) => s.nfc().collect::<String>().into_bytes(),
-        None => name.as_bytes().to_vec(),
-    }
-}
-
-/// Join canonical path components with `/` into a single byte string.
-fn join_slash(components: &[Vec<u8>]) -> Vec<u8> {
-    let mut out = Vec::new();
-    for (i, comp) in components.iter().enumerate() {
-        if i > 0 {
-            out.push(b'/');
-        }
-        out.extend_from_slice(comp);
-    }
-    out
 }
 
 fn copy_tree(src: &Path, dest: &Path) -> io::Result<()> {
@@ -314,9 +274,8 @@ mod tests {
 
     #[test]
     fn ascii_tree_hash_is_stable() {
-        // A golden value captured from the previous scheme: the canonical (NFC, `/`-joined)
-        // serialization must be byte-identical for ASCII content, so existing lockfiles
-        // stay valid and no version bump is needed.
+        // A golden value that pins the hash scheme: a change to path serialization,
+        // ordering, or framing would break existing lockfiles, so it must be deliberate.
         let d = tempfile::tempdir().unwrap();
         write(d.path(), "std.scad", "x=1;");
         write(d.path(), "lib/util.scad", "y=2;");
@@ -328,19 +287,16 @@ mod tests {
     }
 
     #[test]
-    fn nfd_and_nfc_filenames_hash_identically() {
-        // The same logical name in decomposed (NFD, as a macOS filesystem may present it)
-        // and precomposed (NFC, as Linux uses) form must hash the same, so a lockfile is
-        // portable across those filesystems.
-        let nfd = tempfile::tempdir().unwrap();
-        write(nfd.path(), "cafe\u{301}.scad", "x=1;"); // e + combining acute
-        let nfc = tempfile::tempdir().unwrap();
-        write(nfc.path(), "caf\u{e9}.scad", "x=1;"); // é precomposed
-        // Sanity: the raw filename bytes really do differ.
-        assert_ne!("cafe\u{301}.scad".as_bytes(), "caf\u{e9}.scad".as_bytes());
+    fn hash_orders_paths_by_component_not_flat_bytes() {
+        // A root file `lib.scad` sorts AFTER the directory `lib/` under component-wise
+        // ordering (`lib` < `lib.scad`), but BEFORE it under flat-byte ordering (`.`=0x2e <
+        // `/`=0x2f). This golden pins the component-wise order the scheme relies on.
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "lib.scad", "a=1;");
+        write(d.path(), "lib/x.scad", "b=2;");
         assert_eq!(
-            content_hash(nfd.path()).unwrap(),
-            content_hash(nfc.path()).unwrap()
+            content_hash(d.path()).unwrap(),
+            "1a67b2454b943ef5749246d609c0a3615326dee44db53879c433dff941805b11"
         );
     }
 

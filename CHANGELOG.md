@@ -6,14 +6,6 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
-### Changed
-
-- **OS-independent content hashes** — the store/lockfile hash now serializes paths
-  canonically (components joined with `/`, each Unicode-normalized to NFC) and ignores file
-  mode, so a `scadman.lock` is reproducible across Linux and macOS (e.g. an NFD filename on
-  a macOS filesystem hashes the same as its NFC form on Linux). For ASCII content — all real
-  OpenSCAD libraries — the hash is unchanged, so existing lockfiles stay valid.
-
 ### Added
 
 - **`scadman update [name…]`** — advance dependencies to newer commits and report what
