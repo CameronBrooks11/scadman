@@ -39,9 +39,32 @@ it). In practice the risk is contained: a consumer imports via `<name/…>`, so 
 imports don't clash; the collision is only *between two `on_path` libraries* that share a
 top-level filename. scadman warns when that happens.
 
+## Consuming a src-layout library
+
+There are two ways to depend on a src-layout library like dotSCAD, chosen to match how your
+own `.scad` files import it:
+
+- **Reach into `src/`.** Add it at the repo root (no knobs) and keep the subdir in the
+  import path: `use <dotSCAD/src/shape_trapezium.scad>`. The module you name resolves under
+  `env/dotSCAD/src/`, and the siblings it imports resolve relative to that file (OpenSCAD
+  searches an included file's own directory). Simplest when you use a few specific files,
+  and how existing code that already wrote `dotSCAD/src/…` keeps working. It does not put
+  `src/` on the path, so files that import src-root-relative need approach (b).
+- **Expose `src/` as the root.** Add it with `root = "src", on_path = true` and drop the
+  subdir: `use <dotSCAD/shape_trapezium.scad>`. This matches how the library documents its
+  own imports and puts `src/` on `OPENSCADPATH`, so deep internal imports resolve at any
+  depth. Prefer it for heavy use, or when the library's docs import as `<dotSCAD/…>`.
+
+Both render correctly — pick the one that matches the import style already in your files.
+
 ## Discovery
 
-A consumer must currently know a library needs `root`/`on_path` (documented per-library;
-the include-scan's unresolved-import warnings are a hint). A future registry/adapter layer
-can declare a library's layout on its behalf, so consumers don't have to — but the manifest
+A consumer must currently know a library needs `root`/`on_path` (documented per-library; a
+direct mis-import in your own code shows up as an OpenSCAD render failure — the cue to set
+them). The include-scan covers the *transitive* case: it follows the project's imports into
+each dependency and names any undeclared library those dependency files reach, so a
+manifest-less lib's own hidden dependency surfaces as a precise warning rather than a raw
+failure. Because the scan is reachability-based, it reports only libraries the used files
+actually reach — never a dependency's unused internals. A future registry/adapter layer can
+declare a library's layout on its behalf, so consumers don't have to — but the manifest
 knobs are the primitive that layer would populate.
