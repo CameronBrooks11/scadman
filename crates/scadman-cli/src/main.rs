@@ -310,9 +310,12 @@ fn write_vscode_settings(openscadpath: &str) -> Result<()> {
     let object = settings
         .as_object_mut()
         .context(".vscode/settings.json is not a JSON object")?;
+    // Write the path relative to the workspace (VS Code expands `${workspaceFolder}`), so the
+    // committed settings work on any checkout instead of pinning this machine's absolute path.
+    let value = workspace_relative(openscadpath);
     object.insert(
         "openscad.search_paths".to_string(),
-        serde_json::Value::String(openscadpath.to_string()),
+        serde_json::Value::String(value),
     );
 
     fs::write(
@@ -322,6 +325,27 @@ fn write_vscode_settings(openscadpath: &str) -> Result<()> {
     .with_context(|| format!("write {}", path.display()))?;
     println!("Wrote `openscad.search_paths` to {}", path.display());
     Ok(())
+}
+
+/// Rewrite an `OPENSCADPATH` (absolute, under the current project) to use VS Code's
+/// `${workspaceFolder}` token, so the written settings are portable across checkouts. Paths
+/// outside the project (unusual) are left absolute.
+fn workspace_relative(openscadpath: &str) -> String {
+    let Ok(cwd) = std::env::current_dir() else {
+        return openscadpath.to_string();
+    };
+    workspace_relative_to(openscadpath, &cwd.to_string_lossy())
+}
+
+fn workspace_relative_to(openscadpath: &str, cwd: &str) -> String {
+    openscadpath
+        .split(':')
+        .map(|p| match p.strip_prefix(cwd) {
+            Some(rest) => format!("${{workspaceFolder}}{rest}"),
+            None => p.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 fn doctor_cmd() -> Result<()> {
@@ -340,11 +364,14 @@ fn doctor_cmd() -> Result<()> {
 
     let manifest = load_manifest().ok();
     match &manifest {
-        Some(m) => println!(
-            "manifest:     {} ({} dependencies)",
-            manifest::MANIFEST_FILE,
-            m.dependencies.len()
-        ),
+        Some(m) => {
+            let n = m.dependencies.len();
+            println!(
+                "manifest:     {} ({n} {})",
+                manifest::MANIFEST_FILE,
+                plural(n, "dependency", "dependencies")
+            )
+        }
         None => println!(
             "manifest:     {} not found — run `scadman init`",
             manifest::MANIFEST_FILE
@@ -360,7 +387,9 @@ fn doctor_cmd() -> Result<()> {
             .count();
         if tracking > 0 {
             println!(
-                "tracking:     {tracking} dependency(ies) track a branch/tag — `scadman update` to advance"
+                "tracking:     {tracking} {} track{} a branch/tag — `scadman update` to advance",
+                plural(tracking, "dependency", "dependencies"),
+                if tracking == 1 { "s" } else { "" }
             );
         }
     }
@@ -369,13 +398,21 @@ fn doctor_cmd() -> Result<()> {
     if env_dir.exists() {
         let count = fs::read_dir(&env_dir).map(Iterator::count).unwrap_or(0);
         println!(
-            "environment:  {count} package(s) exposed at {}",
+            "environment:  {count} {} exposed at {}",
+            plural(count, "package", "packages"),
             env_dir.display()
         );
-    } else {
+    } else if manifest.is_some() {
         println!("environment:  not built — run `scadman sync`");
+    } else {
+        println!("environment:  not built");
     }
     Ok(())
+}
+
+/// The singular or plural noun for a count (e.g. `plural(1, "package", "packages")`).
+fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
+    if n == 1 { one } else { many }
 }
 
 fn report_lockfile(manifest: &Manifest) {
@@ -391,11 +428,14 @@ fn report_lockfile(manifest: &Manifest) {
             Some(reason) => {
                 println!("lockfile:     out of date ({reason}) — run `scadman lock`")
             }
-            None => println!(
-                "lockfile:     {} ({} packages, up to date)",
-                lockfile::LOCKFILE_FILE,
-                lock.packages.len()
-            ),
+            None => {
+                let n = lock.packages.len();
+                println!(
+                    "lockfile:     {} ({n} {}, up to date)",
+                    lockfile::LOCKFILE_FILE,
+                    plural(n, "package", "packages")
+                )
+            }
         },
         None => println!("lockfile:     present but unreadable"),
     }
@@ -519,6 +559,23 @@ fn add_cmd(
     root: Option<String>,
     on_path: bool,
 ) -> Result<()> {
+    // A git source given with no ref defaults to the remote's current default branch, like
+    // `git clone` — most OpenSCAD libraries publish no releases, so branch-tracking is the
+    // common case (see docs/ecosystem-survey.md). The branch is locked to a commit at lock
+    // time, and `scadman update` advances it.
+    let mut defaulted = None;
+    let branch =
+        if git.is_some() && path.is_none() && rev.is_none() && tag.is_none() && branch.is_none() {
+            let url = git.as_deref().unwrap();
+            let resolved = default_branch(url).with_context(|| {
+                format!("determine the default branch of `{url}` — pass --branch, --tag, or --rev")
+            })?;
+            defaulted = Some(resolved.clone());
+            Some(resolved)
+        } else {
+            branch
+        };
+
     let mut manifest = load_manifest()?;
     let updated = add_dependency(
         &mut manifest,
@@ -535,11 +592,39 @@ fn add_cmd(
     fs::write(manifest::MANIFEST_FILE, text)
         .with_context(|| format!("write {}", manifest::MANIFEST_FILE))?;
     let verb = if updated { "Updated" } else { "Added" };
-    println!(
-        "{verb} `{name}` in {}. Run `scadman lock` to resolve.",
-        manifest::MANIFEST_FILE
-    );
+    match &defaulted {
+        Some(b) => println!(
+            "{verb} `{name}` in {} (tracking default branch `{b}`). Run `scadman lock` to resolve.",
+            manifest::MANIFEST_FILE
+        ),
+        None => println!(
+            "{verb} `{name}` in {}. Run `scadman lock` to resolve.",
+            manifest::MANIFEST_FILE
+        ),
+    }
     Ok(())
+}
+
+/// The remote's current default branch (the target of its `HEAD` symref), via
+/// `git ls-remote`. Used when `scadman add <url>` is given no explicit ref.
+fn default_branch(url: &str) -> Result<String> {
+    let output = ProcCommand::new("git")
+        .args(["ls-remote", "--symref", "--", url, "HEAD"])
+        .output()
+        .context("run `git ls-remote` (is git on PATH?)")?;
+    if !output.status.success() {
+        bail!(
+            "git ls-remote failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    // A symref line looks like: `ref: refs/heads/main\tHEAD`.
+    text.lines()
+        .find_map(|line| line.strip_prefix("ref: refs/heads/"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("`{url}` advertises no default branch"))
 }
 
 /// Insert (or replace) a dependency in the manifest. Returns whether an existing entry was
@@ -993,6 +1078,33 @@ fn current_dir_name() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_relative_uses_the_workspace_token() {
+        let cwd = "/home/u/proj";
+        // A path under the project becomes `${workspaceFolder}`-relative.
+        assert_eq!(
+            workspace_relative_to("/home/u/proj/.scadman/env", cwd),
+            "${workspaceFolder}/.scadman/env"
+        );
+        // Multiple (on_path) entries are each rewritten; the separator is preserved.
+        assert_eq!(
+            workspace_relative_to(
+                "/home/u/proj/.scadman/env:/home/u/proj/.scadman/env/dotSCAD",
+                cwd
+            ),
+            "${workspaceFolder}/.scadman/env:${workspaceFolder}/.scadman/env/dotSCAD"
+        );
+        // A path outside the project is left absolute.
+        assert_eq!(workspace_relative_to("/opt/global", cwd), "/opt/global");
+    }
+
+    #[test]
+    fn plural_picks_the_right_noun() {
+        assert_eq!(plural(1, "package", "packages"), "package");
+        assert_eq!(plural(0, "package", "packages"), "packages");
+        assert_eq!(plural(2, "package", "packages"), "packages");
+    }
 
     #[test]
     fn holds_reference_holds_branches_but_honors_changed_pins() {
