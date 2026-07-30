@@ -81,9 +81,10 @@ Many libraries pull in others without declaring it (e.g. `threadlib` uses `scad-
 library they pull in, naming which library is missing — `scadman add <name> <url>` each,
 then `lock`/`sync` again.
 
-Declare a minimum OpenSCAD version under `[project]` — `openscad = "2021.01"` — and `doctor`
-and `run` warn when the installed OpenSCAD is older. It's advisory (OpenSCAD compatibility is
-really feature-based), not a hard gate.
+Declare a minimum OpenSCAD version under `[project]` — `openscad = "2021.01"` (a `>=` prefix
+is accepted; other operators/ranges aren't) — and `doctor` and `run` warn when the installed
+OpenSCAD is older. It's advisory (OpenSCAD compatibility is really feature-based), not a hard
+gate.
 
 ### Editor integration
 

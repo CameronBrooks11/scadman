@@ -386,15 +386,21 @@ fn doctor_cmd() -> Result<()> {
     if let Some(m) = &manifest {
         if let Some(required) = &m.project.openscad {
             let req = required.trim_start_matches(['>', '=', ' ']);
-            let line = match &installed {
-                None => format!("OpenSCAD ≥ {req} — but it is not on PATH"),
-                Some(have) => match manifest::meets_openscad_requirement(have, required) {
-                    Some(true) => format!("OpenSCAD ≥ {req} (ok)"),
-                    Some(false) => {
-                        format!("OpenSCAD ≥ {req} — installed is older, update OpenSCAD")
-                    }
-                    None => format!("OpenSCAD ≥ {req} (couldn't compare versions)"),
-                },
+            let line = if manifest::parse_requirement(required).is_none() {
+                format!(
+                    "OpenSCAD requirement `{required}` unrecognized — use e.g. `2021.01` or `>=2021.01`"
+                )
+            } else {
+                match &installed {
+                    None => format!("OpenSCAD ≥ {req} — but it is not on PATH"),
+                    Some(have) => match manifest::meets_openscad_requirement(have, required) {
+                        Some(true) => format!("OpenSCAD ≥ {req} (ok)"),
+                        Some(false) => {
+                            format!("OpenSCAD ≥ {req} — installed is older, update OpenSCAD")
+                        }
+                        None => format!("OpenSCAD ≥ {req} (couldn't read the installed version)"),
+                    },
+                }
             };
             println!("requires:     {line}");
         }

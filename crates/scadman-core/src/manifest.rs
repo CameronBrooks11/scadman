@@ -128,11 +128,28 @@ pub fn parse_version(s: &str) -> Option<Vec<u32>> {
     (!nums.is_empty()).then_some(nums)
 }
 
+/// Parse a project's `openscad` requirement into a minimum version. Only a bare version
+/// (`"2021.01"`) or a `>=`/`>` prefix is recognized; anything else (`^`, `<`, `~>`, ranges)
+/// returns `None` so the caller can flag it rather than silently treat it as a minimum.
+pub fn parse_requirement(required: &str) -> Option<Vec<u32>> {
+    let rest = required.trim();
+    let rest = rest
+        .strip_prefix(">=")
+        .or_else(|| rest.strip_prefix('>'))
+        .unwrap_or(rest)
+        .trim();
+    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    parse_version(rest)
+}
+
 /// Whether an `installed` OpenSCAD version string satisfies the `required` minimum. `None`
-/// if either can't be parsed (the caller reports that it couldn't check).
+/// if the installed version can't be parsed or the requirement is unrecognized (see
+/// [`parse_requirement`]).
 pub fn meets_openscad_requirement(installed: &str, required: &str) -> Option<bool> {
     let mut have = parse_version(installed)?;
-    let mut need = parse_version(required)?;
+    let mut need = parse_requirement(required)?;
     let len = have.len().max(need.len());
     have.resize(len, 0);
     need.resize(len, 0);
@@ -207,8 +224,28 @@ mod tests {
             meets_openscad_requirement("2019.05", ">=2021.01"),
             Some(false)
         );
-        // Unparseable → can't decide.
+        // Leading-zero month ordering: `2021.01` (Jan) is below `2021.10` (Oct).
+        assert_eq!(
+            meets_openscad_requirement("2021.01", "2021.10"),
+            Some(false)
+        );
+        assert_eq!(meets_openscad_requirement("2021.10", "2021.01"), Some(true));
+        // `2021.1` and `2021.01` are the same version (month 1).
+        assert_eq!(meets_openscad_requirement("2021.1", "2021.01"), Some(true));
+        // Unparseable installed / unrecognized requirement → can't decide.
         assert_eq!(meets_openscad_requirement("dev", "2021.01"), None);
+        assert_eq!(meets_openscad_requirement("2021.01", "^2021.01"), None);
+    }
+
+    #[test]
+    fn parse_requirement_only_accepts_bare_or_ge() {
+        assert_eq!(parse_requirement("2021.01"), Some(vec![2021, 1]));
+        assert_eq!(parse_requirement(">=2021.01"), Some(vec![2021, 1]));
+        assert_eq!(parse_requirement("> 2021.01"), Some(vec![2021, 1]));
+        // Unsupported operators / ranges are rejected, not silently treated as a minimum.
+        for bad in ["^2021.01", "<2021.01", "~>2021", "2021.01 || 2022.0", ""] {
+            assert_eq!(parse_requirement(bad), None, "should reject `{bad}`");
+        }
     }
 
     #[test]
