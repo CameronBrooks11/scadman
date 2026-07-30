@@ -100,4 +100,4 @@ Deliberate limitations for this alpha:
 - **`on_path` libraries share a flat namespace.** Opting a dependency into `on_path` places its root on `OPENSCADPATH`; two such libraries with a same-named top-level file collide (scadman warns).
 - **No native OpenSCAD-GUI integration.** `OPENSCADPATH` is the integration seam (`scadman env`); GUI/registry work is future.
 
-Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md).
+Roadmap: tracked on GitHub — see the [post-alpha roadmap epic](https://github.com/CameronBrooks11/scadman/issues/44).
