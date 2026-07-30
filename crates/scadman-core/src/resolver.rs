@@ -11,10 +11,12 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::lockfile::{LOCKFILE_VERSION, LockedPackage, Lockfile};
-use crate::manifest::{Dependency, GitDependency, MANIFEST_FILE, Manifest, validate_package_name};
+use crate::lockfile::{LOCKFILE_VERSION, LockedPackage, Lockfile, PATH_SOURCE_PREFIX};
+use crate::manifest::{
+    Dependency, GitDependency, MANIFEST_FILE, Manifest, PathDependency, validate_package_name,
+};
 use crate::source::fetch_git;
 use crate::store::Store;
 
@@ -31,10 +33,14 @@ pub struct Fetched {
     pub path: std::path::PathBuf,
 }
 
-/// Resolves and fetches a git source at a reference. Abstracted so the resolver is
-/// testable without a network or real git.
+/// Acquires dependency content into the store. Abstracted so the resolver is testable
+/// without a network or real git.
 pub trait Fetcher {
+    /// Acquire a git source at a reference.
     fn fetch(&self, url: &str, reference: &str) -> io::Result<Fetched>;
+    /// Acquire a local directory (a path dependency). The `rev` of the result is the
+    /// content hash — a path dependency has no revision, only whatever it contains now.
+    fn fetch_path(&self, dir: &Path) -> io::Result<Fetched>;
 }
 
 /// The production fetcher: git acquisition into a content-addressed store.
@@ -55,6 +61,15 @@ impl Fetcher for GitFetcher {
             rev: acquired.rev,
             hash: acquired.entry.hash,
             path: acquired.entry.path,
+        })
+    }
+
+    fn fetch_path(&self, dir: &Path) -> io::Result<Fetched> {
+        let entry = self.store.insert(dir)?;
+        Ok(Fetched {
+            rev: entry.hash.clone(),
+            hash: entry.hash,
+            path: entry.path,
         })
     }
 }
@@ -135,7 +150,7 @@ pub enum Conflict {
 pub enum ResolveError {
     /// A dependency conflict the user must resolve.
     Conflict(Conflict),
-    /// A dependency form not supported in v1 (registry versions, path deps).
+    /// A dependency form not supported in v1 (registry versions; a transitive path dep).
     Unsupported(String),
     /// Fetching a source failed.
     Fetch {
@@ -232,7 +247,9 @@ pub fn canonical_url(url: &str) -> String {
 pub fn lock_staleness(manifest: &Manifest, lock: &Lockfile) -> Option<String> {
     for (name, dep) in &manifest.dependencies {
         let Dependency::Git(git) = dep else {
-            continue; // path/registry deps don't resolve in v1
+            // Path deps are re-resolved every sync (their content is mutable), so staleness
+            // is moot; registry deps don't resolve in v1.
+            continue;
         };
         let identity = canonical_url(&git.git);
         match lock.packages.iter().find(|p| &p.name == name) {
@@ -273,9 +290,18 @@ pub fn lock_staleness(manifest: &Manifest, lock: &Lockfile) -> Option<String> {
 }
 
 /// Resolve a manifest into a pinned set — one version per identity.
-pub fn resolve(root: &Manifest, fetcher: &dyn Fetcher) -> Result<ResolvedSet, ResolveError> {
+///
+/// `base` is the directory the root manifest lives in; relative path dependencies resolve
+/// against it. (Path dependencies are only permitted in the root manifest — see
+/// [`Resolution::visit_one`].)
+pub fn resolve(
+    root: &Manifest,
+    base: &Path,
+    fetcher: &dyn Fetcher,
+) -> Result<ResolvedSet, ResolveError> {
     let mut resolution = Resolution {
         fetcher,
+        base,
         by_identity: BTreeMap::new(),
         name_to_identity: BTreeMap::new(),
     };
@@ -288,6 +314,7 @@ pub fn resolve(root: &Manifest, fetcher: &dyn Fetcher) -> Result<ResolvedSet, Re
 
 struct Resolution<'a> {
     fetcher: &'a dyn Fetcher,
+    base: &'a Path,
     by_identity: BTreeMap<String, Resolved>,
     name_to_identity: BTreeMap<String, String>,
 }
@@ -326,12 +353,42 @@ impl Resolution<'_> {
             reason,
         })?;
 
-        let git = match dep {
-            Dependency::Git(git) => git,
-            Dependency::Path(_) => {
-                return Err(ResolveError::Unsupported(format!(
-                    "path dependency `{name}` is not supported yet"
-                )));
+        // How to acquire this dependency's content, kept owned so the fetch happens after
+        // the name-binding check (below) without borrowing `dep`.
+        enum FetchInput {
+            Git { url: String, reference: String },
+            Path { dir: PathBuf },
+        }
+
+        // Identity (the "one version per identity" key and lockfile source), exposure knobs,
+        // and how to acquire it, per dependency kind.
+        let (identity, root, on_path, input) = match dep {
+            Dependency::Git(git) => {
+                let identity = canonical_url(&git.git);
+                let input = FetchInput::Git {
+                    url: identity.clone(),
+                    reference: git_reference(name, git)?.to_string(),
+                };
+                (
+                    identity,
+                    git.root.clone().unwrap_or_else(|| ".".to_string()),
+                    git.on_path,
+                    input,
+                )
+            }
+            Dependency::Path(p) => {
+                // A path dependency names a directory on this machine — meaningless when it
+                // arrives via a fetched (untrusted) transitive manifest, so only the root
+                // manifest may declare one.
+                if !via.is_empty() {
+                    return Err(ResolveError::Unsupported(format!(
+                        "path dependency `{name}` is only supported in the root manifest (found via {})",
+                        render_chain(via)
+                    )));
+                }
+                let dir = self.resolve_path_dep(name, p)?;
+                let identity = format!("{PATH_SOURCE_PREFIX}{}", dir.display());
+                (identity, ".".to_string(), false, FetchInput::Path { dir })
             }
             Dependency::Version(_) => {
                 return Err(ResolveError::Unsupported(format!(
@@ -339,9 +396,6 @@ impl Resolution<'_> {
                 )));
             }
         };
-
-        let identity = canonical_url(&git.git);
-        let reference = git_reference(name, git)?;
 
         // One exposed name must map to one identity. Record the binding on ALL paths —
         // including the unify early-return below — so a later use of the name is checked.
@@ -357,14 +411,15 @@ impl Resolution<'_> {
         self.name_to_identity
             .insert(name.to_string(), identity.clone());
 
-        let fetched =
-            self.fetcher
-                .fetch(&identity, reference)
-                .map_err(|error| ResolveError::Fetch {
-                    name: name.to_string(),
-                    source: identity.clone(),
-                    error,
-                })?;
+        let fetched = match input {
+            FetchInput::Git { url, reference } => self.fetcher.fetch(&url, &reference),
+            FetchInput::Path { dir } => self.fetcher.fetch_path(&dir),
+        }
+        .map_err(|error| ResolveError::Fetch {
+            name: name.to_string(),
+            source: identity.clone(),
+            error,
+        })?;
 
         // Already resolved this identity — must agree on revision and on exposed name.
         if let Some(existing) = self.by_identity.get(&identity) {
@@ -399,13 +454,32 @@ impl Resolution<'_> {
                 rev: fetched.rev,
                 hash: fetched.hash,
                 dependencies: dep_names,
-                root: git.root.clone().unwrap_or_else(|| ".".to_string()),
-                on_path: git.on_path,
+                root,
+                on_path,
                 required_by: required_by.clone(),
             },
         );
 
         self.visit(&dep_deps, &required_by, depth + 1)
+    }
+}
+
+impl Resolution<'_> {
+    /// Resolve a path dependency's directory against the base dir and canonicalize it.
+    fn resolve_path_dep(&self, name: &str, p: &PathDependency) -> Result<PathBuf, ResolveError> {
+        let joined = self.base.join(&p.path);
+        let dir = joined.canonicalize().map_err(|error| ResolveError::Fetch {
+            name: name.to_string(),
+            source: format!("{PATH_SOURCE_PREFIX}{}", joined.display()),
+            error,
+        })?;
+        if !dir.is_dir() {
+            return Err(ResolveError::Unsupported(format!(
+                "path dependency `{name}` ({}) is not a directory",
+                dir.display()
+            )));
+        }
+        Ok(dir)
     }
 }
 
@@ -533,6 +607,22 @@ mod tests {
                 path,
             })
         }
+
+        fn fetch_path(&self, dir: &Path) -> io::Result<Fetched> {
+            // A path dep is acquired straight from disk; derive a deterministic hash from the
+            // directory and read any transitive deps from the real dir (as production does).
+            let key: String = dir
+                .to_string_lossy()
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect();
+            let hash = format!("pathhash-{key}");
+            Ok(Fetched {
+                rev: hash.clone(),
+                hash,
+                path: dir.to_path_buf(),
+            })
+        }
     }
 
     fn manifest(toml: &str) -> Manifest {
@@ -549,7 +639,7 @@ mod tests {
     #[test]
     fn empty_manifest_resolves_to_nothing() {
         let root = manifest("[project]\nname = \"p\"\n");
-        let set = resolve(&root, &FakeFetcher::new()).unwrap();
+        let set = resolve(&root, Path::new("."), &FakeFetcher::new()).unwrap();
         assert!(set.packages.is_empty());
     }
 
@@ -559,7 +649,7 @@ mod tests {
         let root = manifest(
             "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"r1\" }\n",
         );
-        let set = resolve(&root, &fetcher).unwrap();
+        let set = resolve(&root, Path::new("."), &fetcher).unwrap();
         assert_eq!(set.packages.len(), 1);
         assert_eq!(set.packages[0].rev, "sha_a");
         assert!(set.packages[0].dependencies.is_empty());
@@ -578,7 +668,7 @@ mod tests {
         let root = manifest(
             "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"ra\" }\n",
         );
-        let set = resolve(&root, &fetcher).unwrap();
+        let set = resolve(&root, Path::new("."), &fetcher).unwrap();
         let names: Vec<&str> = set.packages.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, vec!["A", "B"]);
         let a = set.packages.iter().find(|p| p.name == "A").unwrap();
@@ -596,7 +686,7 @@ mod tests {
         let root = manifest(
             "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"ra\" }\nC = { git = \"https://h/C\", rev = \"rc\" }\n",
         );
-        let set = resolve(&root, &fetcher).unwrap();
+        let set = resolve(&root, Path::new("."), &fetcher).unwrap();
         assert_eq!(set.packages.iter().filter(|p| p.name == "B").count(), 1);
         assert_eq!(set.packages.len(), 3);
     }
@@ -613,7 +703,7 @@ mod tests {
         let root = manifest(
             "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"ra\" }\nC = { git = \"https://h/C\", rev = \"rc\" }\n",
         );
-        let err = resolve(&root, &fetcher).unwrap_err();
+        let err = resolve(&root, Path::new("."), &fetcher).unwrap_err();
         match err {
             ResolveError::Conflict(Conflict::Version {
                 identity,
@@ -644,18 +734,11 @@ mod tests {
         let root = manifest(
             "[project]\nname = \"p\"\n[dependencies]\nOne = { git = \"https://h/A\", rev = \"r1\" }\nTwo = { git = \"https://h/A\", rev = \"r1\" }\n",
         );
-        let err = resolve(&root, &fetcher).unwrap_err();
+        let err = resolve(&root, Path::new("."), &fetcher).unwrap_err();
         assert!(matches!(
             err,
             ResolveError::Conflict(Conflict::Alias { .. })
         ));
-    }
-
-    #[test]
-    fn path_dependency_is_unsupported() {
-        let root = manifest("[project]\nname = \"p\"\n[dependencies]\nA = { path = \"../a\" }\n");
-        let err = resolve(&root, &FakeFetcher::new()).unwrap_err();
-        assert!(matches!(err, ResolveError::Unsupported(_)));
     }
 
     #[test]
@@ -668,7 +751,7 @@ mod tests {
         let root = manifest(
             "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"r1\" }\n",
         );
-        let err = resolve(&root, &fetcher).unwrap_err();
+        let err = resolve(&root, Path::new("."), &fetcher).unwrap_err();
         assert!(matches!(err, ResolveError::Manifest { .. }));
     }
 
@@ -685,7 +768,7 @@ mod tests {
         let root = manifest(
             "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"ra\" }\nC = { git = \"https://h/C\", rev = \"rc\" }\n",
         );
-        let err = resolve(&root, &fetcher).unwrap_err();
+        let err = resolve(&root, Path::new("."), &fetcher).unwrap_err();
         assert!(matches!(err, ResolveError::Conflict(Conflict::Name { .. })));
     }
 
@@ -700,14 +783,14 @@ mod tests {
         let root = manifest(
             "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"ra\" }\n",
         );
-        let set = resolve(&root, &fetcher).unwrap();
+        let set = resolve(&root, Path::new("."), &fetcher).unwrap();
         assert_eq!(set.packages.len(), 2);
     }
 
     #[test]
     fn registry_version_dependency_is_unsupported() {
         let root = manifest("[project]\nname = \"p\"\n[dependencies]\nA = \"^1.0\"\n");
-        let err = resolve(&root, &FakeFetcher::new()).unwrap_err();
+        let err = resolve(&root, Path::new("."), &FakeFetcher::new()).unwrap_err();
         assert!(matches!(err, ResolveError::Unsupported(_)));
     }
 
@@ -776,7 +859,67 @@ mod tests {
                 on_path: false,
             }),
         );
-        let err = resolve(&root, &FakeFetcher::new()).unwrap_err();
+        let err = resolve(&root, Path::new("."), &FakeFetcher::new()).unwrap_err();
         assert!(matches!(err, ResolveError::InvalidName { .. }));
+    }
+
+    #[test]
+    fn path_dependency_is_resolved_relative_to_base() {
+        // A local sibling library, with its own transitive git dependency.
+        let base = TempDir::new().unwrap();
+        let lib = base.path().join("locallib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(
+            lib.join(MANIFEST_FILE),
+            "[project]\nname = \"locallib\"\n\n[dependencies]\nUtil = { git = \"https://h/util\", rev = \"u1\" }\n",
+        )
+        .unwrap();
+
+        let root = manifest(
+            "[project]\nname = \"p\"\n\n[dependencies]\nmylib = { path = \"locallib\" }\n",
+        );
+        let fetcher = FakeFetcher::new().pkg("https://h/util", &[("u1", "u1")], None);
+        let set = resolve(&root, base.path(), &fetcher).unwrap();
+
+        let mylib = set.packages.iter().find(|p| p.name == "mylib").unwrap();
+        assert!(
+            mylib.source.starts_with(PATH_SOURCE_PREFIX),
+            "path source: {}",
+            mylib.source
+        );
+        assert_eq!(
+            mylib.rev, mylib.hash,
+            "a path dep's rev is its content hash"
+        );
+        assert_eq!(mylib.dependencies, vec!["Util".to_string()]);
+        // The transitive git dep resolved too.
+        assert!(set.packages.iter().any(|p| p.name == "Util"));
+    }
+
+    #[test]
+    fn missing_path_dependency_is_an_error() {
+        let base = TempDir::new().unwrap();
+        let root =
+            manifest("[project]\nname = \"p\"\n\n[dependencies]\nmissing = { path = \"nope\" }\n");
+        let err = resolve(&root, base.path(), &FakeFetcher::new()).unwrap_err();
+        assert!(matches!(err, ResolveError::Fetch { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn transitive_path_dependency_is_rejected() {
+        // A fetched (untrusted) manifest must not be able to reference a local path.
+        let root = manifest(
+            "[project]\nname = \"p\"\n\n[dependencies]\nA = { git = \"https://h/a\", rev = \"a1\" }\n",
+        );
+        let fetcher = FakeFetcher::new().pkg(
+            "https://h/a",
+            &[("a1", "a1")],
+            Some("[project]\nname = \"a\"\n\n[dependencies]\nevil = { path = \"../../etc\" }\n"),
+        );
+        let err = resolve(&root, Path::new("."), &fetcher).unwrap_err();
+        assert!(
+            matches!(&err, ResolveError::Unsupported(m) if m.contains("only supported in the root")),
+            "{err:?}"
+        );
     }
 }

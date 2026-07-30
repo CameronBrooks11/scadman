@@ -452,3 +452,91 @@ fn graph_without_lock_nudges() {
         "nudges to run lock"
     );
 }
+
+#[test]
+fn path_dependency_syncs_and_picks_up_edits() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+
+    // A plain local sibling library (no git).
+    let lib = root.path().join("lib");
+    fs::create_dir_all(&lib).unwrap();
+    fs::write(lib.join("greet.scad"), "module greet() { cube(1); }\n").unwrap();
+
+    let proj = project_with(
+        root.path(),
+        "[project]\nname = \"app\"\n\n[dependencies]\nmylib = { path = \"../lib\" }\n",
+    );
+
+    let lock = scadman(&proj, store.path(), &["lock"]);
+    assert!(
+        lock.status.success(),
+        "lock failed: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    assert!(sync.status.success());
+    // The env exposes the local lib under its name.
+    let exposed = proj
+        .join(".scadman")
+        .join("env")
+        .join("mylib")
+        .join("greet.scad");
+    assert_eq!(
+        fs::read_to_string(&exposed).unwrap(),
+        "module greet() { cube(1); }\n"
+    );
+
+    // Editing the sibling and re-syncing picks up the change (the point of path deps).
+    fs::write(lib.join("greet.scad"), "module greet() { sphere(2); }\n").unwrap();
+    let resync = scadman(&proj, store.path(), &["sync"]);
+    assert!(
+        resync.status.success(),
+        "resync failed: {}",
+        String::from_utf8_lossy(&resync.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&exposed).unwrap(),
+        "module greet() { sphere(2); }\n",
+        "sync should re-read the local path dependency"
+    );
+}
+
+#[test]
+fn add_path_then_lock_end_to_end() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let lib = root.path().join("sib");
+    fs::create_dir_all(&lib).unwrap();
+    fs::write(lib.join("x.scad"), "// x\n").unwrap();
+
+    let proj = project_with(root.path(), "[project]\nname = \"app\"\n");
+    let add = scadman(&proj, store.path(), &["add", "sib", "--path", "../sib"]);
+    assert!(
+        add.status.success(),
+        "add --path failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let manifest = fs::read_to_string(proj.join("scadman.toml")).unwrap();
+    assert!(
+        manifest.contains("path = \"../sib\""),
+        "manifest: {manifest}"
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+}
+
+#[test]
+fn missing_path_dependency_errors_clearly() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = project_with(
+        root.path(),
+        "[project]\nname = \"app\"\n\n[dependencies]\ngone = { path = \"../nope\" }\n",
+    );
+    let out = scadman(&proj, store.path(), &["lock"]);
+    assert!(
+        !out.status.success(),
+        "lock of a missing path dep should fail"
+    );
+}

@@ -4,6 +4,16 @@ All notable changes to scadman are recorded here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [SemVer](https://semver.org/) (pre-1.0: expect breaking changes between minor versions).
 
+## [Unreleased]
+
+### Added
+
+- **Path dependencies** — depend on a local sibling library with
+  `Name = { path = "../lib" }` (or `scadman add Name --path ../lib`). Path deps are
+  re-read on every `sync`, so edits to the sibling are picked up immediately; a lockfile
+  referencing one is local, not reproducible. Only the root manifest may declare a path
+  dependency.
+
 ## [0.1.0-alpha] — 2026-07-28
 
 First public alpha. A working, project-oriented OpenSCAD dependency manager, grounded in a
