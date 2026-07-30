@@ -610,30 +610,29 @@ fn update_cmd(names: Vec<String>) -> Result<()> {
     let manifest = load_manifest()?;
     let store = open_store()?;
     let base = std::env::current_dir().context("determine project directory")?;
+    let previous = read_lockfile_opt()?;
 
-    // Which git identities to re-fetch. Named deps must exist and be git sources (a path dep
-    // is re-read on every sync, not "updated"; a rev pin is included but simply can't move).
-    let refresh: HashSet<String> = if names.is_empty() {
-        manifest
-            .dependencies
-            .values()
-            .filter_map(|d| match d {
-                Dependency::Git(g) => Some(canonical_url(&g.git)),
-                _ => None,
-            })
-            .collect()
+    let updated = if names.is_empty() {
+        // Advance everything — a full fresh re-resolve, identical to `scadman lock` (which
+        // already moves branch/tag deps, transitive ones included), plus a delta report.
+        resolve_lock(&manifest, &store)?
     } else {
-        let mut set = HashSet::new();
+        // Advance only the named deps; hold the rest at their locked revisions. Named deps
+        // must exist and be git sources (a path dep is re-read on every sync, not "updated";
+        // a rev pin is accepted but simply can't move).
+        let mut refresh = HashSet::new();
         for name in &names {
             match manifest.dependencies.get(name) {
                 Some(Dependency::Git(g)) => {
-                    set.insert(canonical_url(&g.git));
+                    refresh.insert(canonical_url(&g.git));
                 }
                 Some(Dependency::Path(_)) => bail!(
                     "`{name}` is a path dependency — its content is re-read on every `sync`, not updated"
                 ),
                 Some(Dependency::Version(_)) => {
-                    bail!("`{name}` is a registry dependency (not supported)")
+                    bail!(
+                        "`{name}` is a registry (version) dependency, which needs a registry (not in v1)"
+                    )
                 }
                 None => bail!(
                     "`{name}` is not a dependency in {}",
@@ -641,15 +640,13 @@ fn update_cmd(names: Vec<String>) -> Result<()> {
                 ),
             }
         }
-        set
+        let base_lock = previous.clone().unwrap_or_else(Lockfile::new);
+        let fetcher = CachedGitFetcher::new(&store, &base_lock, refresh);
+        resolve(&manifest, &base, &fetcher)
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .to_lockfile()
     };
 
-    let previous = read_lockfile_opt()?;
-    let base_lock = previous.clone().unwrap_or_else(Lockfile::new);
-    let fetcher = CachedGitFetcher::new(&store, &base_lock, refresh);
-    let updated = resolve(&manifest, &base, &fetcher)
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .to_lockfile();
     write_lock(&updated)?;
     report_update(previous.as_ref(), &updated);
     Ok(())
@@ -845,6 +842,7 @@ impl Fetcher for CachedGitFetcher {
     fn fetch(&self, url: &str, reference: &str) -> io::Result<Fetched> {
         if !self.refresh.contains(url)
             && let Some((rev, hash)) = self.locked.get(url)
+            && holds_reference(reference, rev)
         {
             let path = self.store.path_for(hash);
             if path.exists() {
@@ -861,6 +859,17 @@ impl Fetcher for CachedGitFetcher {
     fn fetch_path(&self, dir: &Path) -> io::Result<Fetched> {
         self.inner.fetch_path(dir)
     }
+}
+
+/// Whether serving the locked commit `rev` satisfies a request for `reference`, i.e. the
+/// cache may hold this dep rather than re-fetch. A branch/tag name is intentionally held at
+/// its locked commit (scadman doesn't chase upstream movement unless the dep is named for
+/// `update`). But a request for a *different exact commit* — a changed `rev` pin, e.g. a
+/// transitive dep whose parent moved — must be honored, or the lock would record a commit
+/// its requester no longer asks for.
+fn holds_reference(reference: &str, rev: &str) -> bool {
+    let is_commit = reference.len() >= 7 && reference.chars().all(|c| c.is_ascii_hexdigit());
+    !is_commit || rev.starts_with(reference)
 }
 
 fn read_or_lock(store: &Store) -> Result<Lockfile> {
@@ -984,6 +993,23 @@ fn current_dir_name() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn holds_reference_holds_branches_but_honors_changed_pins() {
+        let rev = "061fef7abc0000000000000000000000000000ab";
+        // Branch/tag names are held at the locked commit.
+        assert!(holds_reference("main", rev));
+        assert!(holds_reference("v2.0.700", rev));
+        // The same exact pin (full or abbreviated) is held — no needless re-fetch.
+        assert!(holds_reference(rev, rev));
+        assert!(holds_reference("061fef7", rev));
+        // A different exact commit must NOT be held — it has to be re-fetched.
+        assert!(!holds_reference(
+            "deadbeef1234567890000000000000000000cafe",
+            rev
+        ));
+        assert!(!holds_reference("deadbee", rev));
+    }
 
     #[test]
     fn add_dependency_requires_exactly_one_ref() {

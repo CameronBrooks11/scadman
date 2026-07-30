@@ -48,7 +48,9 @@ scadman doctor               # check OpenSCAD, store, manifest, lock, and enviro
 Because most OpenSCAD libraries don't publish releases, an exact git revision is a
 first-class dependency form, not an afterthought. A branch/tag dependency is pinned at lock
 time; advance it later with `scadman update` (all deps) or `scadman update <name>` (just
-one) — it reports which commits moved. Exact `rev` pins never move.
+one, holding the rest) — it reports which commits moved. Exact `rev` pins never move.
+(Re-running `scadman lock` also re-resolves and advances branch/tag deps; `update` adds
+selective advancement, a delta report, and — via `update <name>` — leaving the others put.)
 
 To co-develop a project alongside a local library, depend on it by path instead of a git
 source:

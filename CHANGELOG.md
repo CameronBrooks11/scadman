@@ -9,9 +9,10 @@ All notable changes to scadman are recorded here. Format loosely follows
 ### Added
 
 - **`scadman update [name…]`** — advance dependencies to newer commits and report what
-  moved. With no arguments it re-resolves everything (branch/tag deps move to the current
-  tip); with names it advances only those and holds the rest at their locked revisions.
-  Exact `rev` pins never move. `doctor` now notes when dependencies track a branch/tag.
+  moved. With no arguments it re-resolves everything (like `scadman lock`, but with a delta
+  report); with names it advances only those and holds the rest at their locked revisions
+  (path deps are always re-read). Exact `rev` pins never move. `doctor` now notes when
+  dependencies track a branch/tag.
 
 - **Path dependencies** — depend on a local sibling library with
   `Name = { path = "../lib" }` (or `scadman add Name --path ../lib`, with `--root`/`--on-path`

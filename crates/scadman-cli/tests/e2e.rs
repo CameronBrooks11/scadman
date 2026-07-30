@@ -771,7 +771,7 @@ fn update_scopes_to_named_dependencies() {
     fs::create_dir_all(&lib_b).unwrap();
     fs::write(lib_b.join("b.scad"), "// b\n").unwrap();
     git(&lib_b, &["init", "--quiet"]);
-    commit_all(&lib_b, "init");
+    let b_rev0 = commit_all(&lib_b, "init");
 
     let (ba, bb) = (branch_of(&lib_a), branch_of(&lib_b));
     let proj = project_with(
@@ -798,6 +798,10 @@ fn update_scopes_to_named_dependencies() {
         !after.contains(&b_new),
         "`b` must NOT advance (held at its locked rev)"
     );
+    assert!(
+        after.contains(&b_rev0),
+        "`b` held at exactly its originally-locked rev"
+    );
     assert_eq!(after.matches("rev =").count(), 2, "both deps still locked");
 }
 
@@ -819,4 +823,157 @@ fn update_rejects_a_path_dependency_name() {
         "updating a path dep should be rejected"
     );
     assert!(String::from_utf8_lossy(&out.stderr).contains("path dependency"));
+}
+
+#[test]
+fn full_update_advances_a_transitive_branch_dep() {
+    // Regression: `scadman update` (no names) must advance transitive branch/tag deps too,
+    // matching `scadman lock` — not hold them at their locked rev.
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+
+    // Leaf lib B (transitive), on a branch.
+    let libb = root.path().join("b");
+    fs::create_dir_all(&libb).unwrap();
+    fs::write(libb.join("b.scad"), "// b1\n").unwrap();
+    git(&libb, &["init", "--quiet"]);
+    commit_all(&libb, "b1");
+    let bb = branch_of(&libb);
+
+    // Lib A depends on B (transitive), and is itself a branch dep of the project.
+    let liba = root.path().join("a");
+    fs::create_dir_all(&liba).unwrap();
+    fs::write(liba.join("a.scad"), "// a1\n").unwrap();
+    fs::write(
+        liba.join("scadman.toml"),
+        format!(
+            "[project]\nname = \"a\"\n\n[dependencies]\nb = {{ git = \"file://{}\", branch = \"{bb}\" }}\n",
+            libb.display()
+        ),
+    )
+    .unwrap();
+    git(&liba, &["init", "--quiet"]);
+    commit_all(&liba, "a1");
+    let ba = branch_of(&liba);
+
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\na = {{ git = \"file://{}\", branch = \"{ba}\" }}\n",
+            liba.display()
+        ),
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+
+    // Advance both the leaf B and the parent A.
+    fs::write(libb.join("more.scad"), "// b2\n").unwrap();
+    let b2 = commit_all(&libb, "b2");
+    fs::write(liba.join("more.scad"), "// a2\n").unwrap();
+    commit_all(&liba, "a2");
+
+    assert!(scadman(&proj, store.path(), &["update"]).status.success());
+    let after = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    assert!(
+        after.contains(&b2),
+        "the transitive branch dep B must advance on a full `update`"
+    );
+}
+
+#[test]
+fn doctor_notes_branch_tracking_only_when_present() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, rev) = make_lib(root.path());
+    let branch = branch_of(&lib);
+
+    // Branch dep → doctor should nudge toward update.
+    let tracking = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", branch = \"{branch}\" }}\n",
+            lib.display()
+        ),
+    );
+    let out = scadman(&tracking, store.path(), &["doctor"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("tracking:"));
+
+    // Rev pin only → no tracking nudge.
+    let pinned = root.path().join("pinned");
+    fs::create_dir_all(&pinned).unwrap();
+    fs::write(
+        pinned.join("scadman.toml"),
+        format!(
+            "[project]\nname = \"pinned\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
+            lib.display()
+        ),
+    )
+    .unwrap();
+    let out = scadman(&pinned, store.path(), &["doctor"]);
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("tracking:"),
+        "a rev-pin-only project must not show the tracking hint"
+    );
+}
+
+#[test]
+fn update_with_no_prior_lock_reports_added() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, rev) = make_lib(root.path());
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
+            lib.display()
+        ),
+    );
+    let out = scadman(&proj, store.path(), &["update"]);
+    assert!(out.status.success());
+    assert!(
+        proj.join("scadman.lock").exists(),
+        "update creates the lock"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Added mylib"),
+        "no prior lock → reports Added: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn update_reports_a_removed_dependency() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, rev) = make_lib(root.path());
+    let src = format!("file://{}", lib.display());
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"{src}\", rev = \"{rev}\" }}\n"
+        ),
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    // Remove the only dependency, then update.
+    fs::write(proj.join("scadman.toml"), "[project]\nname = \"app\"\n").unwrap();
+    let out = scadman(&proj, store.path(), &["update"]);
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Removed mylib"),
+        "should report the dropped dep: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn update_unknown_dependency_errors() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = project_with(root.path(), "[project]\nname = \"app\"\n");
+    let out = scadman(&proj, store.path(), &["update", "ghost"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("not a dependency"),
+        "clear unknown-name error: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
