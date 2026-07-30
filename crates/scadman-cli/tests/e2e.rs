@@ -586,3 +586,79 @@ fn path_dep_does_not_force_refetch_of_git_deps() {
         "an unchanged path-dep project must not rewrite the lock"
     );
 }
+
+#[test]
+fn changing_a_git_pin_still_nudges_even_with_a_path_dep() {
+    // A path dep auto-refreshes, but it must NOT disable the staleness nudge for a git dep
+    // beside it: editing the git pin in the manifest requires an explicit `scadman lock`.
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (gitlib, rev) = make_lib(root.path());
+    let sib = root.path().join("sib");
+    fs::create_dir_all(&sib).unwrap();
+    fs::write(sib.join("s.scad"), "// s\n").unwrap();
+
+    let manifest = |git_rev: &str| {
+        format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\nmygit = {{ git = \"file://{}\", rev = \"{git_rev}\" }}\nmysib = {{ path = \"../sib\" }}\n",
+            gitlib.display()
+        )
+    };
+    let proj = project_with(root.path(), &manifest(&rev));
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+
+    // Point the git dep at a different revision without re-locking, then sync.
+    let other = "0123456789abcdef0123456789abcdef01234567";
+    fs::write(proj.join("scadman.toml"), manifest(other)).unwrap();
+    let out = scadman(&proj, store.path(), &["sync"]);
+    assert!(
+        !out.status.success(),
+        "sync must not silently ignore a changed git pin when a path dep coexists"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("scadman lock"),
+        "should nudge to re-lock: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn path_dependency_with_root_and_on_path_exposes_the_subdir() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    // A src-layout sibling: code under src/.
+    let lib = root.path().join("srclib");
+    fs::create_dir_all(lib.join("src")).unwrap();
+    fs::write(lib.join("src").join("core.scad"), "// core\n").unwrap();
+
+    let proj = project_with(
+        root.path(),
+        "[project]\nname = \"app\"\n\n[dependencies]\nsrclib = { path = \"../srclib\", root = \"src\", on_path = true }\n",
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    assert!(scadman(&proj, store.path(), &["sync"]).status.success());
+
+    // Exposed under its name → the src/ contents (not the repo root).
+    let exposed = proj.join(".scadman/env/srclib/core.scad");
+    assert_eq!(fs::read_to_string(&exposed).unwrap(), "// core\n");
+    // on_path places the library's own dir on OPENSCADPATH.
+    let env = scadman(&proj, store.path(), &["env"]);
+    let path = String::from_utf8_lossy(&env.stdout);
+    assert!(
+        path.contains(".scadman/env/srclib"),
+        "on_path should add the lib dir to OPENSCADPATH: {path}"
+    );
+}
+
+#[test]
+fn add_path_rejects_a_conflicting_ref_flag() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = project_with(root.path(), "[project]\nname = \"app\"\n");
+    let out = scadman(
+        &proj,
+        store.path(),
+        &["add", "x", "--path", "../x", "--rev", "abc"],
+    );
+    assert!(!out.status.success(), "--path with --rev must be rejected");
+}

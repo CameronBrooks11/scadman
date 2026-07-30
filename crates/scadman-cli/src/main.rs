@@ -756,11 +756,22 @@ fn read_or_lock(store: &Store) -> Result<Lockfile> {
         }
         // A path dependency tracks a local directory's current content, which the lockfile
         // cannot pin. Re-resolve so an edit to a sibling library is picked up (the point of
-        // co-developing with path deps). Crucially, git dependencies are held at their locked
-        // revisions and served from the store (CachedGitFetcher) — a path dep must not force
-        // the network or silently move a branch/tag dep, so `sync`/`run` still work offline.
-        // The lock is rewritten only when the resolution actually changed.
+        // co-developing with path deps). Git dependencies are held at their locked revisions
+        // and served from the store (CachedGitFetcher) — a path dep must not force the
+        // network or silently move a branch/tag dep, so `sync`/`run` still work offline. The
+        // lock is rewritten only when the resolution actually changed.
         if has_path_dependency(&manifest) {
+            // Git deps still obey the lock: a changed git pin in the manifest needs an
+            // explicit `scadman lock`, exactly as in a git-only project — a path dep must not
+            // quietly disable that staleness check for the git deps beside it. (Branch/tag
+            // upstream movement isn't chased here either, also as in a git-only project.)
+            if let Some(reason) = lock_staleness(&manifest, &lock) {
+                bail!(
+                    "{} is out of date with {}: {reason}. Run `scadman lock`.",
+                    lockfile::LOCKFILE_FILE,
+                    manifest::MANIFEST_FILE
+                );
+            }
             let fetcher = CachedGitFetcher::new(store, &lock);
             let base = std::env::current_dir().context("determine project directory")?;
             let refreshed = resolve(&manifest, &base, &fetcher)

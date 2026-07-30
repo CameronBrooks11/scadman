@@ -9,10 +9,12 @@ All notable changes to scadman are recorded here. Format loosely follows
 ### Added
 
 - **Path dependencies** — depend on a local sibling library with
-  `Name = { path = "../lib" }` (or `scadman add Name --path ../lib`). Path deps are
-  re-read on every `sync`, so edits to the sibling are picked up immediately; a lockfile
-  referencing one is local, not reproducible. Only the root manifest may declare a path
-  dependency.
+  `Name = { path = "../lib" }` (or `scadman add Name --path ../lib`, with `--root`/`--on-path`
+  for a src-layout sibling). `sync`/`run`/`env` re-read the directory so code edits are
+  picked up immediately, while git dependencies beside it stay pinned and are served from
+  the store (offline-capable); a changed git pin still needs `scadman lock`. Only the root
+  manifest may declare a path dependency, and a lockfile referencing one is local, not
+  reproducible.
 
 ## [0.1.0-alpha] — 2026-07-28
 
