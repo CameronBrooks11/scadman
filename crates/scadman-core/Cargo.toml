@@ -12,3 +12,4 @@ toml.workspace = true
 sha2.workspace = true
 regex.workspace = true
 tempfile.workspace = true
+unicode-normalization.workspace = true
