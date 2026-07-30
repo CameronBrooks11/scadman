@@ -97,12 +97,18 @@ impl Store {
 
 /// A deterministic content hash of a directory tree.
 ///
-/// Files are hashed in sorted relative-path order, each contribution covering the path,
-/// a NUL separator, the byte length, and the bytes — so both content and layout matter.
-/// Paths are hashed as their raw OS bytes (not lossily decoded), so names differing only
-/// in invalid UTF-8 stay distinct. A nested `.git` directory is ignored, so a Git
-/// checkout hashes to its content alone. The hash is stable per machine (the store key
-/// only needs that); path-separator conventions make it OS-specific.
+/// Files are hashed in sorted relative-path order; each contributes its path, a NUL
+/// separator, the content byte length, and the content bytes — so both content and layout
+/// matter. Paths are hashed as their raw OS bytes (names differing only in invalid UTF-8
+/// stay distinct), and a nested `.git` directory is ignored, so a Git checkout hashes to
+/// its working-tree content alone.
+///
+/// The hash is reproducible across the Unix platforms scadman runs on (Linux and macOS):
+/// both use `/` as the path separator, and file mode is not hashed. Two residual cross-OS
+/// hazards are git-config concerns, not the hash's: a filename differing only by Unicode
+/// normalization form (NFC vs NFD) — which git's default `core.precomposeUnicode` avoids on
+/// macOS — and `core.autocrlf`, which rewrites file *content* line endings. Windows is not
+/// supported (this uses the Unix byte view of paths).
 pub fn content_hash(dir: &Path) -> io::Result<String> {
     let mut files = Vec::new();
     collect_files(dir, PathBuf::new(), &mut files)?;
@@ -264,5 +270,43 @@ mod tests {
         let entry = Store::new(store_root.path()).insert(src.path()).unwrap();
         assert!(entry.path.join("std.scad").exists());
         assert!(!entry.path.join("leak").exists());
+    }
+
+    #[test]
+    fn ascii_tree_hash_is_stable() {
+        // A golden value that pins the hash scheme: a change to path serialization,
+        // ordering, or framing would break existing lockfiles, so it must be deliberate.
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "std.scad", "x=1;");
+        write(d.path(), "lib/util.scad", "y=2;");
+        write(d.path(), "lib/sub/deep.scad", "z=3;");
+        assert_eq!(
+            content_hash(d.path()).unwrap(),
+            "e6e5ec53c7350f3fd1c7f4d01d5eac2e8f8669931f7c8260eb5aaba9f28bae8a"
+        );
+    }
+
+    #[test]
+    fn hash_orders_paths_by_component_not_flat_bytes() {
+        // A root file `lib.scad` sorts AFTER the directory `lib/` under component-wise
+        // ordering (`lib` < `lib.scad`), but BEFORE it under flat-byte ordering (`.`=0x2e <
+        // `/`=0x2f). This golden pins the component-wise order the scheme relies on.
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "lib.scad", "a=1;");
+        write(d.path(), "lib/x.scad", "b=2;");
+        assert_eq!(
+            content_hash(d.path()).unwrap(),
+            "1a67b2454b943ef5749246d609c0a3615326dee44db53879c433dff941805b11"
+        );
+    }
+
+    #[test]
+    fn executable_bit_does_not_affect_hash() {
+        use std::os::unix::fs::PermissionsExt;
+        let a = tempfile::tempdir().unwrap();
+        write(a.path(), "std.scad", "x=1;");
+        let before = content_hash(a.path()).unwrap();
+        fs::set_permissions(a.path().join("std.scad"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(before, content_hash(a.path()).unwrap());
     }
 }
