@@ -12,6 +12,10 @@ pub const LOCKFILE_FILE: &str = "scadman.lock";
 /// The lockfile format version, bumped on incompatible layout changes.
 pub const LOCKFILE_VERSION: u32 = 1;
 
+/// Prefix marking a [`LockedPackage::source`] as a local path dependency (the remainder is
+/// the canonicalized absolute path). Path sources are acquired from disk, not fetched.
+pub const PATH_SOURCE_PREFIX: &str = "path:";
+
 /// A parsed `scadman.lock`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lockfile {

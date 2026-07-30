@@ -452,3 +452,213 @@ fn graph_without_lock_nudges() {
         "nudges to run lock"
     );
 }
+
+#[test]
+fn path_dependency_syncs_and_picks_up_edits() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+
+    // A plain local sibling library (no git).
+    let lib = root.path().join("lib");
+    fs::create_dir_all(&lib).unwrap();
+    fs::write(lib.join("greet.scad"), "module greet() { cube(1); }\n").unwrap();
+
+    let proj = project_with(
+        root.path(),
+        "[project]\nname = \"app\"\n\n[dependencies]\nmylib = { path = \"../lib\" }\n",
+    );
+
+    let lock = scadman(&proj, store.path(), &["lock"]);
+    assert!(
+        lock.status.success(),
+        "lock failed: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    assert!(sync.status.success());
+    // The env exposes the local lib under its name.
+    let exposed = proj
+        .join(".scadman")
+        .join("env")
+        .join("mylib")
+        .join("greet.scad");
+    assert_eq!(
+        fs::read_to_string(&exposed).unwrap(),
+        "module greet() { cube(1); }\n"
+    );
+
+    // Editing the sibling and re-syncing picks up the change (the point of path deps).
+    fs::write(lib.join("greet.scad"), "module greet() { sphere(2); }\n").unwrap();
+    let resync = scadman(&proj, store.path(), &["sync"]);
+    assert!(
+        resync.status.success(),
+        "resync failed: {}",
+        String::from_utf8_lossy(&resync.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&exposed).unwrap(),
+        "module greet() { sphere(2); }\n",
+        "sync should re-read the local path dependency"
+    );
+}
+
+#[test]
+fn add_path_then_lock_end_to_end() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let lib = root.path().join("sib");
+    fs::create_dir_all(&lib).unwrap();
+    fs::write(lib.join("x.scad"), "// x\n").unwrap();
+
+    let proj = project_with(root.path(), "[project]\nname = \"app\"\n");
+    let add = scadman(&proj, store.path(), &["add", "sib", "--path", "../sib"]);
+    assert!(
+        add.status.success(),
+        "add --path failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let manifest = fs::read_to_string(proj.join("scadman.toml")).unwrap();
+    assert!(
+        manifest.contains("path = \"../sib\""),
+        "manifest: {manifest}"
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+}
+
+#[test]
+fn missing_path_dependency_errors_clearly() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = project_with(
+        root.path(),
+        "[project]\nname = \"app\"\n\n[dependencies]\ngone = { path = \"../nope\" }\n",
+    );
+    let out = scadman(&proj, store.path(), &["lock"]);
+    assert!(
+        !out.status.success(),
+        "lock of a missing path dep should fail"
+    );
+}
+
+#[test]
+fn path_dep_does_not_force_refetch_of_git_deps() {
+    // A path dep triggers a re-resolve on every sync; git deps alongside it must be served
+    // from the store at their locked rev, NOT re-fetched — so sync keeps working offline and
+    // branch/tag deps don't silently move. Proven by deleting the git remote after locking.
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (gitlib, rev) = make_lib(root.path()); // a git "remote" at <root>/mylib
+
+    let sib = root.path().join("sib");
+    fs::create_dir_all(&sib).unwrap();
+    fs::write(sib.join("s.scad"), "// s\n").unwrap();
+
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\nmygit = {{ git = \"file://{}\", rev = \"{rev}\" }}\nmysib = {{ path = \"../sib\" }}\n",
+            gitlib.display()
+        ),
+    );
+
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    let lock_after_lock = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+
+    // Take the git remote away entirely — a re-fetch would now fail.
+    fs::remove_dir_all(&gitlib).unwrap();
+
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    assert!(
+        sync.status.success(),
+        "sync must serve the git dep from the store cache: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    assert!(
+        proj.join(".scadman/env/mygit").exists(),
+        "git dep still exposed"
+    );
+    assert!(proj.join(".scadman/env/mysib").exists(), "path dep exposed");
+    // Nothing changed, so the lock must not have been rewritten.
+    let lock_after_sync = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    assert_eq!(
+        lock_after_lock, lock_after_sync,
+        "an unchanged path-dep project must not rewrite the lock"
+    );
+}
+
+#[test]
+fn changing_a_git_pin_still_nudges_even_with_a_path_dep() {
+    // A path dep auto-refreshes, but it must NOT disable the staleness nudge for a git dep
+    // beside it: editing the git pin in the manifest requires an explicit `scadman lock`.
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (gitlib, rev) = make_lib(root.path());
+    let sib = root.path().join("sib");
+    fs::create_dir_all(&sib).unwrap();
+    fs::write(sib.join("s.scad"), "// s\n").unwrap();
+
+    let manifest = |git_rev: &str| {
+        format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\nmygit = {{ git = \"file://{}\", rev = \"{git_rev}\" }}\nmysib = {{ path = \"../sib\" }}\n",
+            gitlib.display()
+        )
+    };
+    let proj = project_with(root.path(), &manifest(&rev));
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+
+    // Point the git dep at a different revision without re-locking, then sync.
+    let other = "0123456789abcdef0123456789abcdef01234567";
+    fs::write(proj.join("scadman.toml"), manifest(other)).unwrap();
+    let out = scadman(&proj, store.path(), &["sync"]);
+    assert!(
+        !out.status.success(),
+        "sync must not silently ignore a changed git pin when a path dep coexists"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("scadman lock"),
+        "should nudge to re-lock: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn path_dependency_with_root_and_on_path_exposes_the_subdir() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    // A src-layout sibling: code under src/.
+    let lib = root.path().join("srclib");
+    fs::create_dir_all(lib.join("src")).unwrap();
+    fs::write(lib.join("src").join("core.scad"), "// core\n").unwrap();
+
+    let proj = project_with(
+        root.path(),
+        "[project]\nname = \"app\"\n\n[dependencies]\nsrclib = { path = \"../srclib\", root = \"src\", on_path = true }\n",
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    assert!(scadman(&proj, store.path(), &["sync"]).status.success());
+
+    // Exposed under its name → the src/ contents (not the repo root).
+    let exposed = proj.join(".scadman/env/srclib/core.scad");
+    assert_eq!(fs::read_to_string(&exposed).unwrap(), "// core\n");
+    // on_path places the library's own dir on OPENSCADPATH.
+    let env = scadman(&proj, store.path(), &["env"]);
+    let path = String::from_utf8_lossy(&env.stdout);
+    assert!(
+        path.contains(".scadman/env/srclib"),
+        "on_path should add the lib dir to OPENSCADPATH: {path}"
+    );
+}
+
+#[test]
+fn add_path_rejects_a_conflicting_ref_flag() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = project_with(root.path(), "[project]\nname = \"app\"\n");
+    let out = scadman(
+        &proj,
+        store.path(),
+        &["add", "x", "--path", "../x", "--rev", "abc"],
+    );
+    assert!(!out.status.success(), "--path with --rev must be rejected");
+}

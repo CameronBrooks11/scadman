@@ -65,11 +65,16 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
-/// A local path dependency.
+/// A local path dependency. `root`/`on_path` mirror [`GitDependency`], so a src-layout
+/// sibling library can be co-developed the same way it would be consumed from git.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PathDependency {
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub on_path: bool,
 }
 
 /// Validate that a package name is a safe single path component.
@@ -166,6 +171,8 @@ local-lib = { path = "../local-lib" }
             m.dependencies["local-lib"],
             Dependency::Path(PathDependency {
                 path: "../local-lib".to_string(),
+                root: None,
+                on_path: false,
             })
         );
     }

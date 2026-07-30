@@ -1,15 +1,17 @@
 //! The `scadman` command-line interface.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcCommand;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use scadman_core::{
-    Dependency, Environment, GitDependency, GitFetcher, Installed, Lockfile, Manifest, Store,
-    build_environment, fetch_git, lock_staleness, lockfile, manifest, resolve, unmet_imports,
+    Dependency, Environment, Fetched, Fetcher, GitDependency, GitFetcher, Installed, Lockfile,
+    Manifest, Store, build_environment, fetch_git, lock_staleness, lockfile, manifest, resolve,
+    unmet_imports,
 };
 use serde::Serialize;
 
@@ -32,12 +34,16 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
-    /// Add a git dependency to scadman.toml.
+    /// Add a git or local-path dependency to scadman.toml.
     Add {
         /// Name to expose the dependency under (the `<Name/…>` include prefix).
         name: String,
-        /// Git URL of the dependency.
-        git: String,
+        /// Git URL of the dependency (omit when using --path).
+        git: Option<String>,
+        /// Local directory to depend on instead of a git source (e.g. `../mylib`). Accepts
+        /// `--root`/`--on-path` like a git source; not a git URL or ref.
+        #[arg(long, conflicts_with_all = ["git", "rev", "tag", "branch"])]
+        path: Option<String>,
         /// Pin to an exact commit.
         #[arg(long)]
         rev: Option<String>,
@@ -97,12 +103,13 @@ fn main() -> Result<()> {
         Command::Add {
             name,
             git,
+            path,
             rev,
             tag,
             branch,
             root,
             on_path,
-        } => add_cmd(name, git, rev, tag, branch, root, on_path),
+        } => add_cmd(name, git, path, rev, tag, branch, root, on_path),
         Command::Remove { name } => remove_cmd(name),
         Command::List => list_cmd(),
         Command::Lock => lock_cmd(),
@@ -484,7 +491,8 @@ fn load_lockfile() -> Result<Lockfile> {
 #[allow(clippy::too_many_arguments)]
 fn add_cmd(
     name: String,
-    git: String,
+    git: Option<String>,
+    path: Option<String>,
     rev: Option<String>,
     tag: Option<String>,
     branch: Option<String>,
@@ -492,7 +500,17 @@ fn add_cmd(
     on_path: bool,
 ) -> Result<()> {
     let mut manifest = load_manifest()?;
-    let updated = add_dependency(&mut manifest, &name, git, rev, tag, branch, root, on_path)?;
+    let updated = add_dependency(
+        &mut manifest,
+        &name,
+        git,
+        path,
+        rev,
+        tag,
+        branch,
+        root,
+        on_path,
+    )?;
     let text = manifest.to_toml().context("serialize manifest")?;
     fs::write(manifest::MANIFEST_FILE, text)
         .with_context(|| format!("write {}", manifest::MANIFEST_FILE))?;
@@ -504,13 +522,15 @@ fn add_cmd(
     Ok(())
 }
 
-/// Insert (or replace) a git dependency in the manifest. Returns whether an existing entry
-/// was replaced. Exactly one of `rev`/`tag`/`branch` must be given.
+/// Insert (or replace) a dependency in the manifest. Returns whether an existing entry was
+/// replaced. Either `--path` (a local directory) or a git URL with exactly one of
+/// `rev`/`tag`/`branch` must be given, not both.
 #[allow(clippy::too_many_arguments)]
 fn add_dependency(
     manifest: &mut Manifest,
     name: &str,
-    git: String,
+    git: Option<String>,
+    path: Option<String>,
     rev: Option<String>,
     tag: Option<String>,
     branch: Option<String>,
@@ -518,21 +538,33 @@ fn add_dependency(
     on_path: bool,
 ) -> Result<bool> {
     manifest::validate_package_name(name).map_err(|e| anyhow::anyhow!(e))?;
+
     if let Some(root) = &root {
         manifest::validate_library_root(root).map_err(|e| anyhow::anyhow!(e))?;
     }
-    let refs = [&rev, &tag, &branch].iter().filter(|r| r.is_some()).count();
-    if refs != 1 {
-        bail!("specify exactly one of --rev, --tag, or --branch");
-    }
-    let dep = Dependency::Git(GitDependency {
-        git,
-        rev,
-        tag,
-        branch,
-        root,
-        on_path,
-    });
+    let dep = match (git, path) {
+        (Some(_), Some(_)) => bail!("specify a git URL or --path, not both"),
+        (None, Some(path)) => Dependency::Path(manifest::PathDependency {
+            path,
+            root,
+            on_path,
+        }),
+        (Some(git), None) => {
+            let refs = [&rev, &tag, &branch].iter().filter(|r| r.is_some()).count();
+            if refs != 1 {
+                bail!("specify exactly one of --rev, --tag, or --branch");
+            }
+            Dependency::Git(GitDependency {
+                git,
+                rev,
+                tag,
+                branch,
+                root,
+                on_path,
+            })
+        }
+        (None, None) => bail!("provide a git URL or --path <dir>"),
+    };
     Ok(manifest
         .dependencies
         .insert(name.to_string(), dep)
@@ -644,8 +676,68 @@ fn env_root() -> Result<PathBuf> {
 
 fn resolve_lock(manifest: &Manifest, store: &Store) -> Result<Lockfile> {
     let fetcher = GitFetcher::new(store.clone());
-    let resolved = resolve(manifest, &fetcher).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let base = std::env::current_dir().context("determine project directory")?;
+    let resolved = resolve(manifest, &base, &fetcher).map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(resolved.to_lockfile())
+}
+
+/// Whether the manifest has any path dependency (their content is mutable, so a lockfile
+/// entry can silently go stale — see [`read_or_lock`]).
+fn has_path_dependency(manifest: &Manifest) -> bool {
+    manifest
+        .dependencies
+        .values()
+        .any(|d| matches!(d, Dependency::Path(_)))
+}
+
+/// A fetcher that holds already-locked git sources at their pinned revision — served from
+/// the store without touching the network — and only performs a real fetch for a git source
+/// the lockfile doesn't already pin. Path sources always re-read from disk.
+///
+/// This is what a path-triggered refresh uses (see [`read_or_lock`]): a path dependency's
+/// content must be re-read, but the git dependencies alongside it must NOT be re-fetched or
+/// silently moved off their locked commits — so `sync`/`run` keep working offline.
+struct CachedGitFetcher {
+    inner: GitFetcher,
+    store: Store,
+    /// Git identity (canonical URL) → its locked `(rev, hash)`.
+    locked: HashMap<String, (String, String)>,
+}
+
+impl CachedGitFetcher {
+    fn new(store: &Store, lock: &Lockfile) -> Self {
+        let locked = lock
+            .packages
+            .iter()
+            .filter(|p| !p.source.starts_with(lockfile::PATH_SOURCE_PREFIX))
+            .map(|p| (p.source.clone(), (p.rev.clone(), p.hash.clone())))
+            .collect();
+        Self {
+            inner: GitFetcher::new(store.clone()),
+            store: store.clone(),
+            locked,
+        }
+    }
+}
+
+impl Fetcher for CachedGitFetcher {
+    fn fetch(&self, url: &str, reference: &str) -> io::Result<Fetched> {
+        if let Some((rev, hash)) = self.locked.get(url) {
+            let path = self.store.path_for(hash);
+            if path.exists() {
+                return Ok(Fetched {
+                    rev: rev.clone(),
+                    hash: hash.clone(),
+                    path,
+                });
+            }
+        }
+        self.inner.fetch(url, reference)
+    }
+
+    fn fetch_path(&self, dir: &Path) -> io::Result<Fetched> {
+        self.inner.fetch_path(dir)
+    }
 }
 
 fn read_or_lock(store: &Store) -> Result<Lockfile> {
@@ -661,6 +753,34 @@ fn read_or_lock(store: &Store) -> Result<Lockfile> {
                 lock.version,
                 lockfile::LOCKFILE_VERSION
             );
+        }
+        // A path dependency tracks a local directory's current content, which the lockfile
+        // cannot pin. Re-resolve so an edit to a sibling library is picked up (the point of
+        // co-developing with path deps). Git dependencies are held at their locked revisions
+        // and served from the store (CachedGitFetcher) — a path dep must not force the
+        // network or silently move a branch/tag dep, so `sync`/`run` still work offline. The
+        // lock is rewritten only when the resolution actually changed.
+        if has_path_dependency(&manifest) {
+            // Git deps still obey the lock: a changed git pin in the manifest needs an
+            // explicit `scadman lock`, exactly as in a git-only project — a path dep must not
+            // quietly disable that staleness check for the git deps beside it. (Branch/tag
+            // upstream movement isn't chased here either, also as in a git-only project.)
+            if let Some(reason) = lock_staleness(&manifest, &lock) {
+                bail!(
+                    "{} is out of date with {}: {reason}. Run `scadman lock`.",
+                    lockfile::LOCKFILE_FILE,
+                    manifest::MANIFEST_FILE
+                );
+            }
+            let fetcher = CachedGitFetcher::new(store, &lock);
+            let base = std::env::current_dir().context("determine project directory")?;
+            let refreshed = resolve(&manifest, &base, &fetcher)
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .to_lockfile();
+            if refreshed != lock {
+                write_lock(&refreshed)?;
+            }
+            return Ok(refreshed);
         }
         if let Some(reason) = lock_staleness(&manifest, &lock) {
             bail!(
@@ -688,6 +808,15 @@ fn ensure_stored(lock: &Lockfile, store: &Store) -> Result<()> {
     for package in &lock.packages {
         if store.path_for(&package.hash).exists() {
             continue;
+        }
+        // A path dependency has no remote to re-fetch from; its content is inserted at lock
+        // time. If it is missing here (e.g. a store cleared out from under a committed lock),
+        // re-locking re-reads the local directory — don't try to git-fetch a `path:` source.
+        if package.source.starts_with(lockfile::PATH_SOURCE_PREFIX) {
+            bail!(
+                "path dependency `{}` content is not in the store — run `scadman lock`",
+                package.name
+            );
         }
         let acquired = fetch_git(store, &package.source, &package.rev)
             .with_context(|| format!("fetch {} @ {}", package.name, package.rev))?;
@@ -736,12 +865,26 @@ mod tests {
     #[test]
     fn add_dependency_requires_exactly_one_ref() {
         let mut m = Manifest::new("p");
-        assert!(add_dependency(&mut m, "A", "u".into(), None, None, None, None, false).is_err());
         assert!(
             add_dependency(
                 &mut m,
                 "A",
-                "u".into(),
+                Some("u".into()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            add_dependency(
+                &mut m,
+                "A",
+                Some("u".into()),
+                None,
                 Some("r".into()),
                 Some("t".into()),
                 None,
@@ -759,7 +902,8 @@ mod tests {
         add_dependency(
             &mut m,
             "dotSCAD",
-            url,
+            Some(url),
+            None,
             Some("abc123".into()),
             None,
             None,
@@ -779,11 +923,49 @@ mod tests {
             add_dependency(
                 &mut m,
                 "bad",
-                "u".into(),
+                Some("u".into()),
+                None,
                 Some("r".into()),
                 None,
                 None,
                 Some("../etc".into()),
+                false,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn add_dependency_supports_path_form() {
+        let mut m = Manifest::new("p");
+        add_dependency(
+            &mut m,
+            "local",
+            None,
+            Some("../local".into()),
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        match &m.dependencies["local"] {
+            Dependency::Path(p) => assert_eq!(p.path, "../local"),
+            other => panic!("expected path dependency, got {other:?}"),
+        }
+        // Neither git nor path is an error; both is an error.
+        assert!(add_dependency(&mut m, "x", None, None, None, None, None, None, false).is_err());
+        assert!(
+            add_dependency(
+                &mut m,
+                "x",
+                Some("u".into()),
+                Some("../p".into()),
+                None,
+                None,
+                None,
+                None,
                 false,
             )
             .is_err()

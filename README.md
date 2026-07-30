@@ -47,6 +47,24 @@ scadman doctor               # check OpenSCAD, store, manifest, lock, and enviro
 Because most OpenSCAD libraries don't publish releases, an exact git revision is a
 first-class dependency form, not an afterthought.
 
+To co-develop a project alongside a local library, depend on it by path instead of a git
+source:
+
+```sh
+scadman add mylib --path ../mylib
+```
+
+A path dependency tracks the directory's *current* content — `sync`, `run`, and `env`
+re-read it (rewriting the lock if it changed), so edits to the sibling's code show up
+immediately. Git dependencies beside it stay pinned to their locked commits and are served
+from the store, so those commands still work offline; changing a git pin, or the sibling
+adding a dependency of its own, still needs an explicit `scadman lock` (scadman says so).
+It accepts `--root`/`--on-path` like a git source, for co-developing a src-layout library.
+The whole directory is copied into the store (minus `.git` and symlinks), so keep build
+output and nested envs out of the library root. A path dependency is a local-development
+convenience, not a reproducible pin: a lockfile that references one is not portable to
+another machine (see *Status & scope*).
+
 Libraries whose code lives under a subdir (e.g. `src/`) and import from that root — such as
 dotSCAD — are added with `--root src --on-path` (see
 [docs/library-roots.md](docs/library-roots.md)).
@@ -94,7 +112,8 @@ MCAD, dotSCAD, Round-Anything). Expect rough edges and breaking changes.
 
 Deliberate limitations for this alpha:
 
-- **GitHub-first.** Git sources only — no hosted registry; `path` and registry/version dependencies are not yet supported.
+- **GitHub-first.** Git sources plus local `path` dependencies (for co-developing a sibling library); no hosted registry, and registry/version dependencies are not yet supported.
+- **Path dependencies are local, not reproducible.** They track a directory's current content and are re-read each `sync`; a lockfile that references one is not portable to another machine.
 - **One version per identity.** OpenSCAD's flat namespace means a project resolves a single version of each library (no coexisting versions).
 - **Lockfile hashes are per-OS.** A `scadman.lock` is reproducible across machines of the same OS; cross-OS sharing is not yet guaranteed.
 - **`on_path` libraries share a flat namespace.** Opting a dependency into `on_path` places its root on `OPENSCADPATH`; two such libraries with a same-named top-level file collide (scadman warns).
