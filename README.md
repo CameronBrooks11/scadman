@@ -55,9 +55,13 @@ scadman add mylib --path ../mylib
 ```
 
 A path dependency tracks the directory's *current* content — it is re-read on every `sync`,
-so edits to the sibling show up immediately. That makes it a local-development convenience,
-not a reproducible pin: a lockfile with a path dependency is not portable to another
-machine (see *Status & scope*).
+so edits to the sibling show up immediately, while git dependencies alongside it stay pinned
+to their locked commits (no re-fetch, so `sync` still works offline). It accepts
+`--root`/`--on-path` like a git source, for co-developing a src-layout library. The whole
+directory is copied into the store (minus `.git` and symlinks), so keep build output and
+nested envs out of the library root. A path dependency is a local-development convenience,
+not a reproducible pin: a lockfile that references one is not portable to another machine
+(see *Status & scope*).
 
 Libraries whose code lives under a subdir (e.g. `src/`) and import from that root — such as
 dotSCAD — are added with `--root src --on-path` (see

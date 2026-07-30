@@ -540,3 +540,49 @@ fn missing_path_dependency_errors_clearly() {
         "lock of a missing path dep should fail"
     );
 }
+
+#[test]
+fn path_dep_does_not_force_refetch_of_git_deps() {
+    // A path dep triggers a re-resolve on every sync; git deps alongside it must be served
+    // from the store at their locked rev, NOT re-fetched — so sync keeps working offline and
+    // branch/tag deps don't silently move. Proven by deleting the git remote after locking.
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (gitlib, rev) = make_lib(root.path()); // a git "remote" at <root>/mylib
+
+    let sib = root.path().join("sib");
+    fs::create_dir_all(&sib).unwrap();
+    fs::write(sib.join("s.scad"), "// s\n").unwrap();
+
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\nmygit = {{ git = \"file://{}\", rev = \"{rev}\" }}\nmysib = {{ path = \"../sib\" }}\n",
+            gitlib.display()
+        ),
+    );
+
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    let lock_after_lock = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+
+    // Take the git remote away entirely — a re-fetch would now fail.
+    fs::remove_dir_all(&gitlib).unwrap();
+
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    assert!(
+        sync.status.success(),
+        "sync must serve the git dep from the store cache: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    assert!(
+        proj.join(".scadman/env/mygit").exists(),
+        "git dep still exposed"
+    );
+    assert!(proj.join(".scadman/env/mysib").exists(), "path dep exposed");
+    // Nothing changed, so the lock must not have been rewritten.
+    let lock_after_sync = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    assert_eq!(
+        lock_after_lock, lock_after_sync,
+        "an unchanged path-dep project must not rewrite the lock"
+    );
+}

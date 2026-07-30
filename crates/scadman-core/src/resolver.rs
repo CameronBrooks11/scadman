@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 
 use crate::lockfile::{LOCKFILE_VERSION, LockedPackage, Lockfile, PATH_SOURCE_PREFIX};
 use crate::manifest::{
-    Dependency, GitDependency, MANIFEST_FILE, Manifest, PathDependency, validate_package_name,
+    Dependency, GitDependency, MANIFEST_FILE, Manifest, PathDependency, validate_library_root,
+    validate_package_name,
 };
 use crate::source::fetch_git;
 use crate::store::Store;
@@ -386,9 +387,20 @@ impl Resolution<'_> {
                         render_chain(via)
                     )));
                 }
+                if let Some(root) = &p.root {
+                    validate_library_root(root).map_err(|reason| ResolveError::InvalidName {
+                        name: name.to_string(),
+                        reason,
+                    })?;
+                }
                 let dir = self.resolve_path_dep(name, p)?;
                 let identity = format!("{PATH_SOURCE_PREFIX}{}", dir.display());
-                (identity, ".".to_string(), false, FetchInput::Path { dir })
+                (
+                    identity,
+                    p.root.clone().unwrap_or_else(|| ".".to_string()),
+                    p.on_path,
+                    FetchInput::Path { dir },
+                )
             }
             Dependency::Version(_) => {
                 return Err(ResolveError::Unsupported(format!(
@@ -894,6 +906,33 @@ mod tests {
         assert_eq!(mylib.dependencies, vec!["Util".to_string()]);
         // The transitive git dep resolved too.
         assert!(set.packages.iter().any(|p| p.name == "Util"));
+    }
+
+    #[test]
+    fn two_path_deps_to_the_same_dir_are_an_alias_conflict() {
+        let base = TempDir::new().unwrap();
+        std::fs::create_dir_all(base.path().join("lib")).unwrap();
+        let root = manifest(
+            "[project]\nname = \"p\"\n\n[dependencies]\na = { path = \"lib\" }\nb = { path = \"lib\" }\n",
+        );
+        let err = resolve(&root, base.path(), &FakeFetcher::new()).unwrap_err();
+        assert!(
+            matches!(err, ResolveError::Conflict(Conflict::Alias { .. })),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn path_dependency_carries_root_and_on_path() {
+        let base = TempDir::new().unwrap();
+        std::fs::create_dir_all(base.path().join("lib").join("src")).unwrap();
+        let root = manifest(
+            "[project]\nname = \"p\"\n\n[dependencies]\nlib = { path = \"lib\", root = \"src\", on_path = true }\n",
+        );
+        let set = resolve(&root, base.path(), &FakeFetcher::new()).unwrap();
+        let lib = set.packages.iter().find(|p| p.name == "lib").unwrap();
+        assert_eq!(lib.root, "src");
+        assert!(lib.on_path);
     }
 
     #[test]
