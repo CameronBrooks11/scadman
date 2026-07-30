@@ -353,7 +353,8 @@ fn workspace_relative_to(openscadpath: &str, cwd: &str) -> String {
 }
 
 fn doctor_cmd() -> Result<()> {
-    match openscad_version() {
+    let installed = openscad_version();
+    match &installed {
         Some(version) => println!("openscad:     {version}"),
         None => println!("openscad:     not found on PATH — `scadman run` will fail"),
     }
@@ -383,6 +384,20 @@ fn doctor_cmd() -> Result<()> {
     }
 
     if let Some(m) = &manifest {
+        if let Some(required) = &m.project.openscad {
+            let req = required.trim_start_matches(['>', '=', ' ']);
+            let line = match &installed {
+                None => format!("OpenSCAD ≥ {req} — but it is not on PATH"),
+                Some(have) => match manifest::meets_openscad_requirement(have, required) {
+                    Some(true) => format!("OpenSCAD ≥ {req} (ok)"),
+                    Some(false) => {
+                        format!("OpenSCAD ≥ {req} — installed is older, update OpenSCAD")
+                    }
+                    None => format!("OpenSCAD ≥ {req} (couldn't compare versions)"),
+                },
+            };
+            println!("requires:     {line}");
+        }
         report_lockfile(m);
         let tracking = m
             .dependencies
@@ -848,6 +863,7 @@ fn sync_cmd() -> Result<Environment> {
 
 fn run_cmd(args: Vec<String>) -> Result<()> {
     let store = open_store()?;
+    warn_openscad_too_old();
     let (_, env) = prepare_environment(&store)?;
     // Point OPENSCADPATH at the project env (plus any on_path library roots) so declared
     // dependencies shadow globals. (OpenSCAD still searches its built-in user/install
@@ -862,6 +878,26 @@ fn run_cmd(args: Vec<String>) -> Result<()> {
         bail!("openscad exited with {status}");
     }
     Ok(())
+}
+
+/// Warn (to stderr) if the project declares a minimum OpenSCAD version the installed one
+/// doesn't meet. Advisory only — the render may still work, and compatibility is really
+/// feature-based (see `docs/ecosystem-survey.md`), so this never blocks the run.
+fn warn_openscad_too_old() {
+    let Ok(manifest) = load_manifest() else {
+        return;
+    };
+    let Some(required) = manifest.project.openscad else {
+        return;
+    };
+    if let Some(have) = openscad_version()
+        && manifest::meets_openscad_requirement(&have, &required) == Some(false)
+    {
+        let req = required.trim_start_matches(['>', '=', ' ']);
+        eprintln!(
+            "warning: this project asks for OpenSCAD ≥ {req}, but you have `{have}` — update if a render fails"
+        );
+    }
 }
 
 fn load_manifest() -> Result<Manifest> {

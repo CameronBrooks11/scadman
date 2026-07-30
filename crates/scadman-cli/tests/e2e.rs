@@ -1021,3 +1021,28 @@ fn add_without_a_ref_tracks_the_default_branch() {
     // And it locks to a commit.
     assert!(scadman(&proj, store.path(), &["lock"]).status.success());
 }
+
+#[test]
+fn doctor_reports_an_openscad_requirement() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = project_with(
+        root.path(),
+        "[project]\nname = \"app\"\nopenscad = \"2099.01\"\n",
+    );
+    let out = scadman(&proj, store.path(), &["doctor"]);
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("requires:"),
+        "shows the requirement line: {text}"
+    );
+    assert!(text.contains("OpenSCAD ≥ 2099.01"));
+
+    // A project without the field shows no `requires:` line.
+    let bare = root.path().join("bare");
+    fs::create_dir_all(&bare).unwrap();
+    fs::write(bare.join("scadman.toml"), "[project]\nname = \"bare\"\n").unwrap();
+    let out2 = scadman(&bare, store.path(), &["doctor"]);
+    assert!(!String::from_utf8_lossy(&out2.stdout).contains("requires:"));
+}
