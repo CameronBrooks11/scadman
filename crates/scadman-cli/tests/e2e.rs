@@ -404,6 +404,10 @@ fn env_write_vscode_merges_settings() {
         "sets the LSP search path"
     );
     assert!(
+        settings.contains("${workspaceFolder}/.scadman/env"),
+        "path is workspace-relative (committable), not absolute: {settings}"
+    );
+    assert!(
         settings.contains("editor.tabSize"),
         "preserves existing settings"
     );
@@ -976,4 +980,44 @@ fn update_unknown_dependency_errors() {
         "clear unknown-name error: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+#[test]
+fn add_without_a_ref_tracks_the_default_branch() {
+    // A newcomer's `scadman add <name> <url>` with no ref should just work: track the
+    // remote's default branch (like `git clone`), then lock to a commit.
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, _rev) = make_lib(root.path());
+    let branch = branch_of(&lib);
+    let proj = root.path().join("proj");
+    fs::create_dir_all(&proj).unwrap();
+    assert!(
+        scadman(&proj, store.path(), &["init", "--name", "app"])
+            .status
+            .success()
+    );
+
+    let out = scadman(
+        &proj,
+        store.path(),
+        &["add", "mylib", &format!("file://{}", lib.display())],
+    );
+    assert!(
+        out.status.success(),
+        "bare add failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("default branch"),
+        "should report it defaulted: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let manifest = fs::read_to_string(proj.join("scadman.toml")).unwrap();
+    assert!(
+        manifest.contains(&format!("branch = \"{branch}\"")),
+        "manifest tracks the default branch: {manifest}"
+    );
+    // And it locks to a commit.
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
 }

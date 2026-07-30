@@ -33,7 +33,7 @@ In a project directory:
 
 ```sh
 scadman init                 # create scadman.toml (and ignore .scadman/)
-scadman add BOSL2 https://github.com/BelfrySCAD/BOSL2 --tag v2.0.700
+scadman add BOSL2 https://github.com/BelfrySCAD/BOSL2   # tracks the default branch
 scadman list                 # show declared dependencies and their locked state
 scadman lock                 # resolve dependencies → scadman.lock (exact rev + content hash)
 scadman update [name…]       # advance branch/tag deps to newer commits (all, or just some)
@@ -44,11 +44,13 @@ scadman graph                # show the resolved dependency graph (--json for to
 scadman doctor               # check OpenSCAD, store, manifest, lock, and environment
 ```
 
-`add` also accepts `--rev <commit>` or `--branch <name>` (branches are locked to a commit).
-Because most OpenSCAD libraries don't publish releases, an exact git revision is a
-first-class dependency form, not an afterthought. A branch/tag dependency is pinned at lock
-time; advance it later with `scadman update` (all deps) or `scadman update <name>` (just
-one, holding the rest) — it reports which commits moved. Exact `rev` pins never move.
+With no ref, `add` tracks the remote's default branch (like `git clone`); pass
+`--tag <name>`, `--branch <name>`, or `--rev <commit>` to pin otherwise. Because most
+OpenSCAD libraries don't publish releases, branch-tracking is the common case and an exact
+git revision is a first-class dependency form, not an afterthought. A branch/tag dependency
+is pinned to a commit at lock time; advance it later with `scadman update` (all deps) or
+`scadman update <name>` (just one, holding the rest) — it reports which commits moved. Exact
+`rev` pins never move.
 (Re-running `scadman lock` also re-resolves and advances branch/tag deps; `update` adds
 selective advancement, a delta report, and — via `update <name>` — leaving the others put.)
 
@@ -92,7 +94,17 @@ export OPENSCADPATH="$(scadman env)"
 
 For VS Code, `scadman env --write-vscode` writes the path into `.vscode/settings.json` as
 `openscad.search_paths` (for [openscad-LSP](https://github.com/Leathong/openscad-LSP)),
-merging into any existing settings.
+merging into any existing settings. It's written relative to `${workspaceFolder}`, so the
+file is safe to commit and works on any checkout.
+
+**In the OpenSCAD GUI**, open a model with its dependencies already resolved:
+
+```sh
+scadman run -- model.scad        # syncs, then launches OpenSCAD with OPENSCADPATH set
+```
+
+Or set `OPENSCADPATH` (as above) in the shell you launch OpenSCAD from. Opening OpenSCAD
+without either won't find the project's pinned dependencies.
 
 ## How it works
 
