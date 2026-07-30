@@ -662,3 +662,161 @@ fn add_path_rejects_a_conflicting_ref_flag() {
     );
     assert!(!out.status.success(), "--path with --rev must be rejected");
 }
+
+/// Commit all changes in `dir` and return the new HEAD sha.
+fn commit_all(dir: &Path, msg: &str) -> String {
+    git(dir, &["add", "-A"]);
+    git(
+        dir,
+        &[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "--quiet",
+            "-m",
+            msg,
+        ],
+    );
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn branch_of(dir: &Path) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn update_advances_a_branch_dependency() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, rev_a) = make_lib(root.path());
+    let branch = branch_of(&lib);
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", branch = \"{branch}\" }}\n",
+            lib.display()
+        ),
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    let lock_before = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    assert!(lock_before.contains(&rev_a));
+
+    // Advance the branch, then update.
+    fs::write(lib.join("more.scad"), "// more\n").unwrap();
+    let rev_b = commit_all(&lib, "more");
+    assert_ne!(rev_a, rev_b);
+
+    let out = scadman(&proj, store.path(), &["update"]);
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Updated mylib"),
+        "should report the move: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let lock_after = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    assert!(
+        lock_after.contains(&rev_b),
+        "lock advanced to the new commit"
+    );
+    assert!(!lock_after.contains(&rev_a), "old commit gone");
+}
+
+#[test]
+fn update_leaves_a_rev_pin_untouched() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, rev) = make_lib(root.path());
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
+            lib.display()
+        ),
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    // Even a new upstream commit can't move a rev pin.
+    fs::write(lib.join("more.scad"), "// more\n").unwrap();
+    commit_all(&lib, "more");
+
+    let out = scadman(&proj, store.path(), &["update"]);
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Already up to date"),
+        "a rev pin must not move: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn update_scopes_to_named_dependencies() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib_a, _) = make_lib(root.path());
+    // A second library dir with its own git repo.
+    let lib_b = root.path().join("libb");
+    fs::create_dir_all(&lib_b).unwrap();
+    fs::write(lib_b.join("b.scad"), "// b\n").unwrap();
+    git(&lib_b, &["init", "--quiet"]);
+    commit_all(&lib_b, "init");
+
+    let (ba, bb) = (branch_of(&lib_a), branch_of(&lib_b));
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\na = {{ git = \"file://{}\", branch = \"{ba}\" }}\nb = {{ git = \"file://{}\", branch = \"{bb}\" }}\n",
+            lib_a.display(),
+            lib_b.display()
+        ),
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+
+    // Advance BOTH remotes, then update only `a`.
+    fs::write(lib_a.join("x.scad"), "// x\n").unwrap();
+    let a_new = commit_all(&lib_a, "x");
+    fs::write(lib_b.join("y.scad"), "// y\n").unwrap();
+    let b_new = commit_all(&lib_b, "y");
+
+    let out = scadman(&proj, store.path(), &["update", "a"]);
+    assert!(out.status.success());
+    let after = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    assert!(after.contains(&a_new), "`a` advanced");
+    assert!(
+        !after.contains(&b_new),
+        "`b` must NOT advance (held at its locked rev)"
+    );
+    assert_eq!(after.matches("rev =").count(), 2, "both deps still locked");
+}
+
+#[test]
+fn update_rejects_a_path_dependency_name() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let sib = root.path().join("sib");
+    fs::create_dir_all(&sib).unwrap();
+    fs::write(sib.join("s.scad"), "// s\n").unwrap();
+    let proj = project_with(
+        root.path(),
+        "[project]\nname = \"app\"\n\n[dependencies]\nmysib = { path = \"../sib\" }\n",
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    let out = scadman(&proj, store.path(), &["update", "mysib"]);
+    assert!(
+        !out.status.success(),
+        "updating a path dep should be rejected"
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("path dependency"));
+}
