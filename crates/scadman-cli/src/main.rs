@@ -341,8 +341,12 @@ fn workspace_relative_to(openscadpath: &str, cwd: &str) -> String {
     openscadpath
         .split(':')
         .map(|p| match p.strip_prefix(cwd) {
-            Some(rest) => format!("${{workspaceFolder}}{rest}"),
-            None => p.to_string(),
+            // Only at a path-component boundary, so a sibling like `/a/proj-shared` is left
+            // absolute when cwd is `/a/proj` (a raw prefix would mangle it).
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+                format!("${{workspaceFolder}}{rest}")
+            }
+            _ => p.to_string(),
         })
         .collect::<Vec<_>>()
         .join(":")
@@ -559,6 +563,10 @@ fn add_cmd(
     root: Option<String>,
     on_path: bool,
 ) -> Result<()> {
+    // Load the manifest first, so a bare `add` in a directory with no `scadman.toml` fails
+    // fast rather than after a network round-trip to resolve the default branch.
+    let mut manifest = load_manifest()?;
+
     // A git source given with no ref defaults to the remote's current default branch, like
     // `git clone` — most OpenSCAD libraries publish no releases, so branch-tracking is the
     // common case (see docs/ecosystem-survey.md). The branch is locked to a commit at lock
@@ -576,7 +584,6 @@ fn add_cmd(
             branch
         };
 
-    let mut manifest = load_manifest()?;
     let updated = add_dependency(
         &mut manifest,
         &name,
@@ -1097,6 +1104,18 @@ mod tests {
         );
         // A path outside the project is left absolute.
         assert_eq!(workspace_relative_to("/opt/global", cwd), "/opt/global");
+        // A sibling that merely shares a string prefix must NOT be rewritten.
+        assert_eq!(
+            workspace_relative_to("/home/u/proj-shared/lib", cwd),
+            "/home/u/proj-shared/lib"
+        );
+    }
+
+    #[test]
+    fn default_branch_errors_on_an_unreachable_url() {
+        // A bad/offline URL must surface an error (add_cmd turns it into an actionable
+        // "pass --branch/--tag/--rev"), not a wrong branch.
+        assert!(default_branch("file:///nonexistent-scadman-repo-xyz").is_err());
     }
 
     #[test]
