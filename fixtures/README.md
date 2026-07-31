@@ -1,8 +1,8 @@
 # Fixtures
 
 Real OpenSCAD libraries, pinned to exact revisions, chosen to represent the ecosystem
-archetypes scadman must handle. They anchor design discussions and, later, integration
-tests (resolver, environment construction, layout detection).
+archetypes scadman must handle. They anchor design discussions and integration tests
+(resolver, environment construction, layout detection).
 
 These are **references, not vendored code** — [archetypes.toml](archetypes.toml) pins
 each to a commit SHA so tests can fetch it reproducibly without bloating this repo or

@@ -1,6 +1,8 @@
 # Resolver direction (v1)
 
-Grounded in a multi-agent research pass over the ecosystem survey (`ecosystem-survey.md`,
+> Design record — background on a settled decision, not user documentation.
+
+Grounded in a research pass over the ecosystem survey (`ecosystem-survey.md`,
 28 curated + 200 wild repos) and solver prior art (PubGrub, Go MVS, backtracking, OPM,
 olman). This records the decision so it isn't relitigated.
 
@@ -13,8 +15,8 @@ olman). This records the decision so it isn't relitigated.
 - **Zero formal dependency manifests exist in the wild.** The only real declaration
   mechanism is git submodules (8 repos) — exact-rev pins, i.e. scadman's model already.
 - **54–63% of libraries have no tags**, so an exact git SHA is the only *expressible*
-  constraint → at most one candidate per package. The search PubGrub/backtracking/MVS
-  exist to perform structurally cannot occur.
+  constraint → at most one candidate per package. The search that
+  PubGrub/backtracking/MVS exist to perform structurally cannot occur.
 
 So v1 resolution is **collect + unify + detect-conflict**, not constraint solving.
 
@@ -51,13 +53,16 @@ contained:
   extraction *is* this scan (~50 lines): diff installed deps' `use`/`include` targets
   against the resolved set → "`agentscad` imports `scad-utils/`, not in your manifest — add
   it." It is also the honest replacement for a hermeticity guarantee `OPENSCADPATH` cannot
-  deliver (see corrections).
+  deliver (see corrections). As shipped, the scan became *reachability-based* — it starts
+  from the project's own `.scad` files and follows import edges, warning only about
+  undeclared libraries the project actually reaches — after the diff-everything design
+  produced false positives on real libraries.
 
 ## Alternatives and why they lost
 
 | Option | Verdict |
 |---|---|
-| **PubGrub (pubgrub-rs)** | CDCL never fires with ≤1 candidate; git SHAs have no ordering (uv itself pins git deps *before* PubGrub). Right aspiration (its error prose — copied above), wrong machinery. Clean swap-in later. |
+| **PubGrub (pubgrub-rs)** | CDCL never fires with ≤1 candidate; git SHAs have no ordering (uv itself pins git deps *before* PubGrub). Right aspiration (its error-message quality), wrong machinery. Clean swap-in later. |
 | **Go MVS** | Its `max()` join needs a semver-compatibility contract this ecosystem lacks (63% untagged); under exact pins it degenerates to collect-and-unify. Adopt its *properties* (determinism, integrity records), not its algorithm. |
 | **Backtracking (olman/resolvelib)** | Only matters with multiple candidates, which don't exist under exact pins → untestable dead branches now. If search becomes real, go straight to pubgrub-rs. |
 | **npm nesting / OPM source-rewriting** | Mechanically impossible under a flat namespace; rewriting breaks content-addressing and verification. Already a recorded decision. |
@@ -80,8 +85,9 @@ conflicts; rewrite source; nest versions; touch a registry; manage global instal
    redirect). This is the one choice that becomes a lockfile migration if wrong — fixed now.
 2. **Manifest-less transitive deps:** the user declares them directly; the include-scan
    guides them. No curated metadata overlay in v1.
-3. **Overrides:** reserve the syntax in the manifest schema now; defer implementation. The
-   hard identity-conflict error must not promise a remedy that doesn't exist yet.
+3. **Overrides:** deferred entirely. The manifest rejects unknown keys, so adding override
+   syntax later is a non-breaking change; the hard identity-conflict error must not promise
+   a remedy that doesn't exist yet.
 4. **Branch refs:** allowed, but always locked to an exact SHA in the lockfile.
 5. **Bundled libs (MCAD):** fetchable in v1, no special "provided" casing. It is
    shadowable via `OPENSCADPATH`, so a pinned copy is reproducible.

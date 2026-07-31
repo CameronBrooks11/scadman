@@ -44,13 +44,13 @@ top-level filename. scadman warns when that happens.
 There are two ways to depend on a src-layout library like dotSCAD, chosen to match how your
 own `.scad` files import it:
 
-- **Reach into `src/`.** Add it at the repo root (no knobs) and keep the subdir in the
+- **(a) Reach into `src/`.** Add it at the repo root (no knobs) and keep the subdir in the
   import path: `use <dotSCAD/src/shape_trapezium.scad>`. The module you name resolves under
   `env/dotSCAD/src/`, and the siblings it imports resolve relative to that file (OpenSCAD
   searches an included file's own directory). Simplest when you use a few specific files,
   and how existing code that already wrote `dotSCAD/src/…` keeps working. It does not put
   `src/` on the path, so files that import src-root-relative need approach (b).
-- **Expose `src/` as the root.** Add it with `root = "src", on_path = true` and drop the
+- **(b) Expose `src/` as the root.** Add it with `root = "src", on_path = true` and drop the
   subdir: `use <dotSCAD/shape_trapezium.scad>`. This matches how the library documents its
   own imports and puts `src/` on `OPENSCADPATH`, so deep internal imports resolve at any
   depth. Prefer it for heavy use, or when the library's docs import as `<dotSCAD/…>`.

@@ -1,5 +1,7 @@
 # Ecosystem survey — evidence for the design
 
+> Design record — the evidence behind scadman's model, not user documentation.
+
 scadman's model (see [DECISIONS.md](DECISIONS.md)) rests on a claim: the OpenSCAD
 library ecosystem is a heterogeneous mix of single files, conventional libraries,
 monorepos, and frameworks — not a uniform set of "packages" — and libraries carry

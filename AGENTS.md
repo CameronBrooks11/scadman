@@ -22,7 +22,7 @@ the evidence the design is grounded in.
 crates/
   scadman-core/    # data model + logic: manifest, lockfile, resolver, environment
   scadman-cli/     # the `scadman` binary
-docs/              # decisions, ecosystem survey
+docs/              # user guides (library roots, path deps) + design records
 fixtures/          # archetype libraries pinned for tests (references, not vendored)
 ```
 
@@ -34,7 +34,7 @@ just fmt          # format
 just check        # fmt-check + clippy -D warnings (CI-equivalent)
 just test         # cargo test
 just build        # build all crates
-just run -- init  # run the CLI
+just run init     # run the CLI (args pass through, e.g. `just run add BOSL2 <url>`)
 ```
 
 ## Conventions
