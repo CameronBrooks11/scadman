@@ -4,8 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/CameronBrooks11/scadman?include_prereleases)](https://github.com/CameronBrooks11/scadman/releases)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-A project-oriented package and dependency manager for OpenSCAD libraries, scripts, and
-reusable design assets.
+A project-oriented package manager for OpenSCAD libraries and scripts.
 
 Instead of copying libraries into OpenSCAD's global `libraries/` folder and hoping every
 project still works when one of them changes, scadman gives each project a manifest
@@ -16,9 +15,9 @@ lock time.
 
 ## Install
 
-Grab the prebuilt binary from the [latest release](https://github.com/CameronBrooks11/scadman/releases/latest)
-(Linux x86_64), untar it, and put `scadman` on your `PATH`. On other platforms, build from
-source with a Rust toolchain (≥ 1.85):
+Grab the prebuilt binary from the [latest release](https://github.com/CameronBrooks11/scadman/releases)
+(Linux x86_64), untar it, and put `scadman` on your `PATH`. On macOS (or a different Linux
+architecture), build from source with a Rust toolchain (≥ 1.85):
 
 ```sh
 cargo install --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha.2 scadman-cli
@@ -44,7 +43,8 @@ scadman doctor               # check OpenSCAD, store, manifest, lock, and enviro
 ```
 
 With no ref, `add` tracks the remote's default branch, like `git clone`; pass
-`--tag <name>`, `--branch <name>`, or `--rev <commit>` to pin otherwise. A branch or tag
+`--tag <name>`, `--branch <name>`, or `--rev <commit>` to pin a specific tag, branch, or
+commit. A branch or tag
 is pinned to an exact commit at lock time. Advance it later with `scadman update` (all
 dependencies) or `scadman update <name>` (just one, holding the rest); it reports which
 commits moved. Exact `rev` pins never move.
@@ -63,8 +63,8 @@ immediately, while git dependencies beside it stay pinned. Details and caveats:
 
 ### Library roots
 
-Libraries whose code lives under a subdirectory (e.g. `src/`) and import from that root —
-such as dotSCAD — are added with `--root src --on-path`. See
+Some libraries — dotSCAD, for example — keep their code under a subdirectory like `src/`
+and import relative to it. Add them with `--root src --on-path`; see
 [docs/library-roots.md](docs/library-roots.md).
 
 ### Undeclared imports
@@ -82,14 +82,15 @@ filename (`use <file.scad>`) can't be attributed to a library and aren't flagged
 
 ### Minimum OpenSCAD version
 
-Declare `openscad = "2021.01"` under `[project]` (a `>=` prefix is accepted) and `doctor`
-and `run` warn when the installed OpenSCAD is older. Advisory only, not a hard gate.
+Declare `openscad = "2021.01"` under `[project]` (a `>=` prefix is accepted; other
+operators aren't) and `doctor` and `run` warn when the installed OpenSCAD is older.
+Advisory only, not a hard gate.
 
-## Editor integration
+## Editor and GUI integration
 
 `scadman env` prints the project's `OPENSCADPATH`, and `scadman env --json` emits a
-machine-readable report of the resolved packages. Point an OpenSCAD language server or
-preview extension at it and editor features resolve against the project's pinned
+machine-readable report of the resolved libraries. Point an OpenSCAD language server or
+preview extension at that path and editor features resolve against the project's pinned
 dependency versions:
 
 ```sh
@@ -106,15 +107,15 @@ set. Or export the variable (as above) in the shell you launch OpenSCAD from.
 
 ## How it works
 
-A dependency is resolved to an exact commit, its content is hashed and stored immutably in
-a content-addressed store (`~/.local/share/scadman/store/<hash>/`), and `sync` builds a
-per-project environment (`.scadman/env/`) that exposes each package under its own name —
-symlinked to the store — with `OPENSCADPATH` pointing at it. So a library's own
-`include <BOSL2/…>` resolves to exactly the pinned content.
+A dependency is resolved to an exact commit, its content is hashed and stored immutably
+under that hash (`~/.local/share/scadman/store/<hash>/`), and `sync` builds a per-project
+environment (`.scadman/env/`) that exposes each library under its own name — symlinked to
+the store — with `OPENSCADPATH` pointing at it. So a library's own `include <BOSL2/…>`
+resolves to exactly the pinned content.
 
 OpenSCAD has a flat namespace (`include` is textual, no module scoping), so scadman
-enforces one resolved version per package identity and warns when installed code imports
-a library you didn't declare. Design rationale and the ecosystem evidence behind these
+enforces one resolved version per library and warns when installed code imports a
+library you didn't declare. Design rationale and the ecosystem evidence behind these
 choices are in [docs/](docs/).
 
 ## Status & scope

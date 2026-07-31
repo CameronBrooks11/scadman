@@ -21,9 +21,10 @@ re-read it — rewriting the lock if it changed — so edits to the sibling's co
 immediately.
 
 Git dependencies beside it stay pinned to their locked commits and are served from the
-store, so those commands still work offline. Two changes still need an explicit
-`scadman lock` (scadman tells you when they do): changing a git dependency's pin, and the
-path dependency adding a dependency of its own.
+store, so those commands still work offline. If the sibling declares a new dependency of
+its own, the next `sync` resolves it automatically (that first fetch needs the network).
+Changing a git dependency's pin in your own manifest still needs an explicit
+`scadman lock`; `sync` says so.
 
 ## Caveats
 
