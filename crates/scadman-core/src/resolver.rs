@@ -404,7 +404,7 @@ impl Resolution<'_> {
             }
             Dependency::Version(_) => {
                 return Err(ResolveError::Unsupported(format!(
-                    "registry (version) dependency `{name}` needs a registry, not in v1"
+                    "version dependency `{name}` needs a package registry — registries aren't supported yet; use a git or path source"
                 )));
             }
         };
@@ -729,7 +729,8 @@ mod tests {
                     (rev_a == "sha_b1" && rev_b == "sha_b2")
                         || (rev_a == "sha_b2" && rev_b == "sha_b1")
                 );
-                // Both provenance chains are complete root→leaf paths (the thing olman lost).
+                // Both provenance chains are complete root→leaf paths (a diagnostic prior
+                // tools dropped — see docs/ecosystem-survey.md on olman).
                 assert_eq!(via_a.last().unwrap(), "B");
                 assert_eq!(via_b.last().unwrap(), "B");
                 assert!(via_a[0] == "A" || via_a[0] == "C");
