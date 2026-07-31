@@ -71,12 +71,16 @@ In particular, the registry is **not** seeded from olman's `accepted_repositorie
 (openscad.org/libraries.html, GitHub topic search), using olman's list only as a
 cross-check. No `migrate olman` command is in scope.
 
+Upstream collaboration with the OpenSCAD maintainers was also considered and remains
+open — deferred until there is working software and survey data to point at, to
+avoid a competing-fork dynamic.
+
 ## D6. First real work — survey before product code
 
 **Decision:** run the ecosystem survey first; write no product code until it lands.
 
 The artifacts-aren't-packages thesis (see *The product model*) is a bet about what
-the ecosystem actually looks like. A cheap crawler either validates or cheaply kills
+the ecosystem actually looks like. A cheap crawler either validates or kills
 downstream design (workspaces, adapters, a `kind` taxonomy) before any Rust exists.
 The alternative — build the vertical slice first — risks baking in assumptions the
 data would have corrected. The survey's results are in
@@ -94,9 +98,9 @@ deferred until governance demands it.
 
 ## D8. Housekeeping
 
-**Decision:** Rust `.gitignore` template; README carries the product thesis;
-registry topology (static curated index + direct git, federation-ready) is real but
-**deferred** until well after a working client — GitHub names for a future registry
+**Decision:** Rust `.gitignore` template; the README was rewritten to carry the
+product thesis; registry topology (static curated index + direct git,
+federation-ready) is real but **deferred** until well after a working client — GitHub names for a future registry
 org are already reserved so nothing blocks it later.
 
 ## D9. Dependency resolver (v1) — collect-and-unify, not a solver
@@ -113,8 +117,9 @@ semver-range variant, a polished conflict renderer. Added to v1: the include-sca
 flagging unmet imports, the one failure mode the data shows firing today. Other
 settled choices: identity is a name bound to a canonical URL (URL authoritative);
 manifest-less transitive dependencies are declared by the user, with the
-include-scan warning; overrides deferred entirely (unknown manifest keys are
-rejected, so adding the syntax later is non-breaking); branch refs allowed but
+include-scan warning; overrides deferred entirely (unknown keys in dependency
+tables are rejected, so adding per-dependency syntax later is non-breaking); branch
+refs allowed but
 SHA-locked; OpenSCAD's bundled MCAD is fetchable and shadowable via `OPENSCADPATH`.
 Full rationale in [resolver-direction.md](resolver-direction.md).
 

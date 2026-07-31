@@ -7,9 +7,10 @@ Instructions for AI coding agents working in this repository.
 scadman is a project-oriented package and dependency manager for OpenSCAD — a Rust
 core plus a single-binary CLI. It treats an OpenSCAD project as a reproducible unit
 (manifest + lockfile) rather than a global pile of installed libraries. See
-[README.md](README.md) for the model, [docs/DECISIONS.md](docs/DECISIONS.md) for the
-foundational decisions, and [docs/ecosystem-survey.md](docs/ecosystem-survey.md) for
-the evidence the design is grounded in.
+[README.md](README.md) for usage, [docs/DECISIONS.md](docs/DECISIONS.md) for the
+product model and foundational decisions, and
+[docs/ecosystem-survey.md](docs/ecosystem-survey.md) for the evidence the design is
+grounded in.
 
 ## Stack
 
