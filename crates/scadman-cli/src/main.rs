@@ -40,8 +40,8 @@ enum Command {
         name: String,
         /// Git URL of the dependency (omit when using --path).
         git: Option<String>,
-        /// Local directory to depend on instead of a git source (e.g. `../mylib`). Accepts
-        /// `--root`/`--on-path` like a git source; not a git URL or ref.
+        /// Local directory to depend on instead of a git source (e.g. `../mylib`);
+        /// `--root`/`--on-path` apply as with a git source.
         #[arg(long, conflicts_with_all = ["git", "rev", "tag", "branch"])]
         path: Option<String>,
         /// Pin to an exact commit.
@@ -108,7 +108,7 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Init { name } => init(name),
+        Command::Init { name } => init_cmd(name),
         Command::Add {
             name,
             git,
@@ -131,7 +131,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn init(name: Option<String>) -> Result<()> {
+fn init_cmd(name: Option<String>) -> Result<()> {
     let path = Path::new(manifest::MANIFEST_FILE);
     if path.exists() {
         bail!("{} already exists", manifest::MANIFEST_FILE);
@@ -362,7 +362,11 @@ fn doctor_cmd() -> Result<()> {
         Some(root) => println!(
             "store:        {}{}",
             root.display(),
-            if root.exists() { "" } else { " (empty)" }
+            if root.exists() {
+                ""
+            } else {
+                " (not created yet)"
+            }
         ),
         None => println!("store:        unavailable ($XDG_DATA_HOME and $HOME unset)"),
     }
@@ -387,9 +391,7 @@ fn doctor_cmd() -> Result<()> {
         if let Some(required) = &m.project.openscad {
             let req = required.trim_start_matches(['>', '=', ' ']);
             let line = if manifest::parse_requirement(required).is_none() {
-                format!(
-                    "OpenSCAD requirement `{required}` unrecognized — use e.g. `2021.01` or `>=2021.01`"
-                )
+                format!("`{required}` unrecognized — use e.g. `2021.01` or `>=2021.01`")
             } else {
                 match &installed {
                     None => format!("OpenSCAD ≥ {req} — but it is not on PATH"),
@@ -709,9 +711,10 @@ fn lock_cmd() -> Result<()> {
     let store = open_store()?;
     let lock = resolve_lock(&manifest, &store)?;
     write_lock(&lock)?;
+    let n = lock.packages.len();
     println!(
-        "Locked {} package(s) → {}",
-        lock.packages.len(),
+        "Locked {n} {} → {}",
+        plural(n, "package", "packages"),
         lockfile::LOCKFILE_FILE
     );
     Ok(())
@@ -744,7 +747,7 @@ fn update_cmd(names: Vec<String>) -> Result<()> {
                 ),
                 Some(Dependency::Version(_)) => {
                     bail!(
-                        "`{name}` is a registry (version) dependency, which needs a registry (not in v1)"
+                        "`{name}` is a version dependency, which needs a package registry — registries aren't supported yet; use a git or path source"
                     )
                 }
                 None => bail!(
@@ -859,9 +862,10 @@ fn warn_on_path_collisions(env: &Environment) {
 fn sync_cmd() -> Result<Environment> {
     let store = open_store()?;
     let (_, env) = prepare_environment(&store)?;
+    let n = env.exposed.len();
     println!(
-        "Synced {} package(s) → {}",
-        env.exposed.len(),
+        "Synced {n} {} → {}",
+        plural(n, "package", "packages"),
         env.root.display()
     );
     Ok(env)

@@ -4,7 +4,7 @@
 //! `<root>/<hash>/`. Identical content deduplicates to one entry, entries are never
 //! mutated in place, and inserts are atomic (staged then renamed), so a crash cannot
 //! leave a half-written entry that looks complete. Project environments link into the
-//! store rather than copying (a later slice).
+//! store rather than copying (see the `environment` module).
 
 use std::fs;
 use std::io;
