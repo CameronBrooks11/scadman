@@ -1,0 +1,37 @@
+version: 2
+updates:
+  # Actions used by the CI and release workflows. Pins here rot silently: a
+  # workflow stays green on a deprecated runtime until the runtime is removed.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Cargo workspace. One entry at the root covers both crates — dependabot
+  # reads the workspace members from the root manifest, and Cargo.lock is
+  # committed, so the lock is what actually moves.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
+    groups:
+      cargo:
+        patterns: ["*"]
+
+  # Hook revs drift the same way action pins do, and nothing else watches them.
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    groups:
+      hooks:
+        patterns: ["*"]
