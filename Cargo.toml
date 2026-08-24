@@ -7,7 +7,7 @@ version = "0.1.0-alpha.2"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/CameronBrooks11/scadman"
-rust-version = "1.85"
+rust-version = "1.88"  # let-chains in scadman-core/src/resolver.rs stabilised here
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
