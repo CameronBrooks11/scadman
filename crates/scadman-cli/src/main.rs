@@ -371,21 +371,45 @@ fn doctor_cmd() -> Result<()> {
         None => println!("store:        unavailable ($XDG_DATA_HOME and $HOME unset)"),
     }
 
-    let manifest = load_manifest().ok();
-    match &manifest {
-        Some(m) => {
-            let n = m.dependencies.len();
+    // Deliberately not `load_manifest().ok()`. That collapses "absent" and
+    // "present but invalid" into the same `None`, so a typo in scadman.toml was
+    // reported as "not found — run `scadman init`" — advice that then fails
+    // with "scadman.toml already exists". Diagnosing exactly this is doctor's
+    // job, so the three cases are kept apart.
+    let manifest = match fs::read_to_string(manifest::MANIFEST_FILE) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
             println!(
-                "manifest:     {} ({n} {})",
-                manifest::MANIFEST_FILE,
-                plural(n, "dependency", "dependencies")
-            )
+                "manifest:     {} not found — run `scadman init`",
+                manifest::MANIFEST_FILE
+            );
+            None
         }
-        None => println!(
-            "manifest:     {} not found — run `scadman init`",
-            manifest::MANIFEST_FILE
-        ),
-    }
+        Err(e) => {
+            println!(
+                "manifest:     {} cannot be read — {e}",
+                manifest::MANIFEST_FILE
+            );
+            None
+        }
+        Ok(text) => match Manifest::from_toml(&text) {
+            Ok(m) => {
+                let n = m.dependencies.len();
+                println!(
+                    "manifest:     {} ({n} {})",
+                    manifest::MANIFEST_FILE,
+                    plural(n, "dependency", "dependencies")
+                );
+                Some(m)
+            }
+            Err(e) => {
+                println!(
+                    "manifest:     {} failed to parse — {e}",
+                    manifest::MANIFEST_FILE
+                );
+                None
+            }
+        },
+    };
 
     if let Some(m) = &manifest {
         if let Some(required) = &m.project.openscad {

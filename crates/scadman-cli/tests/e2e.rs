@@ -350,6 +350,47 @@ fn dotscad_renders_with_root_and_on_path() {
 }
 
 #[test]
+fn doctor_distinguishes_a_broken_manifest_from_a_missing_one() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+
+    // A manifest that exists but does not parse. Diagnosing exactly this is
+    // doctor's job, and reporting it as "not found" sends the user to
+    // `scadman init`, which then refuses because the file is right there.
+    let broken = project_with(
+        root.path(),
+        "[project]\nname = \"d\"\n\n[dependencies]\nmylib = { git = 42 }\n",
+    );
+    let out = scadman(&broken, store.path(), &["doctor"]);
+    assert!(
+        out.status.success(),
+        "doctor is a diagnostic; it should still report"
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !text.contains("not found"),
+        "a manifest that exists must not be reported as missing:\n{text}"
+    );
+    assert!(
+        !text.contains("scadman init"),
+        "must not advise init when the file already exists:\n{text}"
+    );
+    assert!(
+        text.contains("scadman.toml") && text.to_lowercase().contains("parse"),
+        "should name the file and say it failed to parse:\n{text}"
+    );
+
+    // The missing case keeps its existing advice.
+    let empty = TempDir::new().unwrap();
+    let out = scadman(empty.path(), store.path(), &["doctor"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("not found") && text.contains("scadman init"),
+        "a genuinely absent manifest should still point at init:\n{text}"
+    );
+}
+
+#[test]
 fn doctor_reports_setup() {
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();
