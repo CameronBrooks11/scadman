@@ -57,8 +57,42 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - uses: extractions/setup-just@v4
-      - name: Check (fmt-check + clippy)
-        run: just check
+      - name: Check (fmt-check + typecheck)
+        run: just fmt-check && just typecheck
+
+  # Clippy runs with -D warnings but does not gate: a new Rust release ships new
+  # lints, and those would otherwise fail CI on code nobody touched. Findings are
+  # visible in the job log; `ok` deliberately does not depend on this.
+  lint:
+    name: Lint (advisory)
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: extractions/setup-just@v4
+      - name: Clippy
+        run: just lint
+
+  # Proves the rust-version in Cargo.toml is true rather than aspirational.
+  msrv:
+    name: MSRV (1.88)
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - name: Check on the declared minimum
+        run: cargo check --all-targets --all-features
 
   test:
     name: Test
@@ -77,7 +111,7 @@ jobs:
   ok:
     name: ok
     if: always()
-    needs: [changes, check, test]
+    needs: [changes, check, test, msrv]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

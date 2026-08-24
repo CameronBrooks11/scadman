@@ -23,6 +23,11 @@ fmt-check:
 lint:
     cargo clippy --all-targets --all-features -- -D warnings
 
+# Type-check without linting. CI gates on this rather than on clippy, so a new
+# lint in a new Rust release reports without failing the build.
+typecheck:
+    cargo check --all-targets --all-features
+
 # Format + lint (non-mutating — safe for CI; clippy compiles, so it type-checks too)
 check: fmt-check lint
 
