@@ -4,6 +4,17 @@ All notable changes to scadman are recorded here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [SemVer](https://semver.org/) (pre-1.0: expect breaking changes between minor versions).
 
+## [Unreleased]
+
+### Fixed
+
+- **`scadman doctor` no longer reports an unparseable manifest as missing.** It
+  loaded the manifest in a way that collapsed a parse error into the same result
+  as an absent file, so a typo in `scadman.toml` printed
+  `scadman.toml not found — run \`scadman init\`` — advice that then fails with
+  `scadman.toml already exists`. Doctor now separates the cases and prints the
+  TOML parse error, with the offending line, which is what it exists to do.
+
 ## [0.1.0-alpha.2] — 2026-07-30
 
 Second alpha. Rounds out the CLI (`graph`, `doctor`, `update`), adds local path
