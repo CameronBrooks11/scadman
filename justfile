@@ -1,5 +1,4 @@
 # Rust task runner
-# See https://github.com/CameronBrooks11/dev-toolbox/blob/main/docs/just-conventions.md
 
 set dotenv-load := false
 
