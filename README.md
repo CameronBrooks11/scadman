@@ -29,7 +29,7 @@ On macOS (or a different Linux architecture), build from source with a Rust tool
 (≥ 1.85):
 
 ```sh
-cargo install --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha.2 scadman-cli
+cargo install --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha.3 scadman-cli
 ```
 
 Either way, `git` and `openscad` need to be on `PATH`.
