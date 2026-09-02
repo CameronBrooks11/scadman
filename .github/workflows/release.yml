@@ -21,8 +21,12 @@ jobs:
       - name: Build
         run: cargo build --release -p scadman-cli
 
+      # The archive plus its SHA-256 in `sha256sum -c` format, so a downloaded
+      # binary can be verified before it goes on PATH.
       - name: Package
-        run: tar -C target/release -czf "scadman-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz" scadman
+        run: |
+          tar -C target/release -czf "scadman-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz" scadman
+          sha256sum scadman-*.tar.gz > checksums.txt
 
       # Publish only this version's CHANGELOG section, not the whole file.
       - name: Extract release notes
@@ -38,6 +42,16 @@ jobs:
             exit 1
           fi
 
+      # Deliberately not --prerelease: GitHub excludes prereleases from
+      # /repos/:owner/:repo/releases/latest, so the flag 404s that endpoint and
+      # `gh release view` with no tag, which is what scripted installs reach for.
+      # The pre-1.0 version string carries the maturity signal instead.
+      #
+      # No --latest either: gh only sends make_latest when the flag is given, and
+      # the API defaults it to true, so each new tag becomes Latest. That is right
+      # while releases are linear — a patch tagged behind a newer line would need
+      # --latest=false. (gh's help says "automatic based on date and version";
+      # that is the API's `legacy` value, which gh does not send.)
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -45,5 +59,4 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" \
             --notes-file release-notes.md \
-            --prerelease \
-            scadman-*.tar.gz
+            scadman-*.tar.gz checksums.txt

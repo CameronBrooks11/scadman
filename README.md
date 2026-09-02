@@ -15,9 +15,18 @@ lock time.
 
 ## Install
 
-Grab the prebuilt binary from the [latest release](https://github.com/CameronBrooks11/scadman/releases)
-(Linux x86_64), untar it, and put `scadman` on your `PATH`. On macOS (or a different Linux
-architecture), build from source with a Rust toolchain (≥ 1.85):
+Grab the prebuilt binary and `checksums.txt` from the
+[latest release](https://github.com/CameronBrooks11/scadman/releases/latest) (Linux x86_64).
+In the directory you downloaded both into:
+
+```sh
+sha256sum --ignore-missing -c checksums.txt
+tar -xzf scadman-*-x86_64-unknown-linux-gnu.tar.gz
+install -Dm755 scadman ~/.local/bin/scadman   # or anywhere on your PATH
+```
+
+On macOS (or a different Linux architecture), build from source with a Rust toolchain
+(≥ 1.85):
 
 ```sh
 cargo install --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha.2 scadman-cli
