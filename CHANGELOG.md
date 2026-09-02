@@ -6,14 +6,40 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] — 2026-09-02
+
+Third alpha. A `doctor` fix, a raised minimum Rust version, and the first release
+built by a pipeline that ships checksums and publishes a full release rather than a
+pre-release.
+
 ### Fixed
 
 - **`scadman doctor` no longer reports an unparseable manifest as missing.** It
   loaded the manifest in a way that collapsed a parse error into the same result
   as an absent file, so a typo in `scadman.toml` printed
-  `scadman.toml not found — run \`scadman init\`` — advice that then fails with
+  `` scadman.toml not found — run `scadman init` `` — advice that then fails with
   `scadman.toml already exists`. Doctor now separates the cases and prints the
   TOML parse error, with the offending line, which is what it exists to do.
+
+### Changed
+
+- **The minimum supported Rust version is now 1.88** (was 1.85). `scadman-core`'s
+  resolver uses let-chains, which stabilised in 1.88. This affects building from
+  source only — the prebuilt binary is unaffected. CI now checks against the
+  version declared in `Cargo.toml` rather than a separately pinned one, so the
+  two cannot drift.
+- **Polished CLI output.** `lock` and `sync` report `Locked 3 packages` rather
+  than `Locked 3 package(s)`; `doctor` describes an absent store as
+  `(not created yet)` rather than `(empty)`; and the error for a version
+  dependency now gives the reason and the way out — registries aren't supported
+  yet, use a git or path source.
+- **Release archives ship with a `checksums.txt`** (SHA-256, `sha256sum -c`
+  format) so a downloaded binary can be verified before it goes on `PATH`. The
+  README's install step does exactly that.
+- **Releases are no longer marked pre-release.** GitHub excludes pre-releases
+  from `/releases/latest`, so that endpoint returned 404 and scripted installs
+  had nothing to resolve against. The version string still carries the maturity
+  signal — this is an alpha.
 
 ## [0.1.0-alpha.2] — 2026-07-30
 
@@ -80,5 +106,6 @@ First public alpha. A working, project-oriented OpenSCAD dependency manager, gro
 GitHub-hosted git sources only; one version per identity; per-OS lockfile hashes; no hosted
 registry or native OpenSCAD-GUI integration yet. See the README's *Status & scope*.
 
+[0.1.0-alpha.3]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha
