@@ -15,7 +15,7 @@ lock time.
 
 ## Install
 
-Grab the prebuilt binary from the [latest release](https://github.com/CameronBrooks11/scadman/releases)
+Grab the prebuilt binary from the [latest release](https://github.com/CameronBrooks11/scadman/releases/latest)
 (Linux x86_64), verify it against the `checksums.txt` published beside it, then untar it and
 put `scadman` on your `PATH`:
 
