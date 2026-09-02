@@ -89,6 +89,9 @@ jobs:
   # declared minimum against a compiler twelve releases newer than the claim —
   # the job would have stayed green while proving nothing. @master is the
   # action's default branch, and is what takes a `toolchain` input.
+  #
+  # Declare the MSRV in full (1.88, not 1.9): the action expands an abbreviated
+  # two-part version against the current release count, so `1.9` installs 1.90.
   msrv:
     name: MSRV (declared minimum)
     needs: [changes]
@@ -100,11 +103,20 @@ jobs:
       - name: Read the declared MSRV
         id: msrv
         run: |
-          version="$(sed -n 's/^rust-version *= *"\([^"]*\)".*/\1/p' Cargo.toml)"
+          version="$(sed -n "s/^[[:space:]]*rust-version[[:space:]]*=[[:space:]]*['\"]\([^'\"]*\)['\"].*/\1/p" Cargo.toml)"
           if [ -z "$version" ]; then
             echo "no rust-version found in Cargo.toml [workspace.package]" >&2
             exit 1
           fi
+          # The action interpolates `toolchain` straight into a `run:` line, so
+          # assert the shape here: a manifest value is repo-controlled data, and
+          # anything exotic in it would reach that line as shell, not a version.
+          case "$version" in
+            *[!0-9.]* | *..* | .* | *.)
+              echo "unexpected rust-version in Cargo.toml: '$version'" >&2
+              exit 1
+              ;;
+          esac
           echo "Declared MSRV: $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@master
