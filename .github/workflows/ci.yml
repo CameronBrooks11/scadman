@@ -81,15 +81,35 @@ jobs:
         run: just lint
 
   # Proves the rust-version in Cargo.toml is true rather than aspirational.
+  #
+  # The toolchain is read from the manifest rather than pinned here, so the two
+  # cannot drift: bumping rust-version moves this job with it, and no numeric
+  # action ref is left for dependabot to "update". It proposed exactly that once
+  # (dtolnay/rust-toolchain@1.88 -> @1.100), which would have checked the
+  # declared minimum against a compiler twelve releases newer than the claim —
+  # the job would have stayed green while proving nothing. @master is the
+  # action's default branch, and is what takes a `toolchain` input.
   msrv:
-    name: MSRV (1.88)
+    name: MSRV (declared minimum)
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.88
+      - name: Read the declared MSRV
+        id: msrv
+        run: |
+          version="$(sed -n 's/^rust-version *= *"\([^"]*\)".*/\1/p' Cargo.toml)"
+          if [ -z "$version" ]; then
+            echo "no rust-version found in Cargo.toml [workspace.package]" >&2
+            exit 1
+          fi
+          echo "Declared MSRV: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@v2
       - name: Check on the declared minimum
         run: cargo check --all-targets --all-features
