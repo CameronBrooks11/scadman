@@ -26,7 +26,7 @@ install -Dm755 scadman ~/.local/bin/scadman   # or anywhere on your PATH
 ```
 
 On macOS (or a different Linux architecture), build from source with a Rust toolchain
-(≥ 1.85):
+(≥ 1.88):
 
 ```sh
 cargo install --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha.3 scadman-cli
