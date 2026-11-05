@@ -30,7 +30,7 @@ fixtures/          # archetype libraries pinned for tests (references, not vendo
 ## Commands
 
 ```sh
-just setup        # rustup components (rustfmt, clippy)
+just setup        # rustup components (rustfmt, clippy) + pre-commit git hooks
 just fmt          # format
 just check        # fmt-check + clippy -D warnings (CI-equivalent)
 just test         # cargo test
