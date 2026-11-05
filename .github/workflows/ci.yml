@@ -57,6 +57,11 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - uses: extractions/setup-just@v4
+      # The release build passes --locked, so a stale Cargo.lock would fail at
+      # tag time. Catch it here instead, on the PR that introduces it. metadata
+      # resolves the graph without compiling, so the check costs seconds.
+      - name: Cargo.lock matches Cargo.toml
+        run: cargo metadata --locked --format-version 1 > /dev/null
       - name: Check (fmt-check + typecheck)
         run: just fmt-check && just typecheck
 

@@ -6,6 +6,13 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Release binaries are built from the committed `Cargo.lock`.** The release
+  build now passes `--locked`, so a lockfile that disagrees with `Cargo.toml` fails
+  the release rather than being rewritten inside the job. CI checks the same thing
+  on every pull request, so a stale lock is caught before it reaches a tag.
+
 ## [0.1.0-alpha.3] — 2026-09-02
 
 Third alpha. A `doctor` fix, a raised minimum Rust version, and the first release

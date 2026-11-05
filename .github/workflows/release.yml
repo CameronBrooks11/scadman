@@ -18,8 +18,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # --locked: build exactly the dependency set recorded in Cargo.lock. Without
+      # it, a lock that disagrees with Cargo.toml is silently rewritten inside the
+      # job, and the binary ships from a resolution the repository never recorded.
       - name: Build
-        run: cargo build --release -p scadman-cli
+        run: cargo build --release --locked -p scadman-cli
 
       # The archive plus its SHA-256 in `sha256sum -c` format, so a downloaded
       # binary can be verified before it goes on PATH.
