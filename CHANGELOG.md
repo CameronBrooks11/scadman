@@ -6,6 +6,14 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`scadman add <url>` now says the URL is in the name position.** Passing only a
+  git URL used to fail with the package-name character error, which read as if the
+  URL were malformed. It now prints `` `<url>` looks like a git URL, not a package
+  name — usage: `scadman add <NAME> <GIT>` `` with a corrected command using the
+  repository's name, e.g. `scadman add BOSL https://github.com/revarbat/BOSL`.
+
 ## [0.1.0-alpha.3] — 2026-09-02
 
 Third alpha. A `doctor` fix, a raised minimum Rust version, and the first release

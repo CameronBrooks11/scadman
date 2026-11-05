@@ -610,6 +610,20 @@ fn add_cmd(
     root: Option<String>,
     on_path: bool,
 ) -> Result<()> {
+    // `scadman add <url>` is the natural first try for anyone coming from npm/cargo/pip.
+    // The name-validation error it would otherwise hit reads as if the URL were malformed,
+    // so say what is wrong instead: the URL is in the NAME position. No name is inferred —
+    // it becomes the `<Name/…>` include prefix, which is the user's choice to make.
+    if looks_like_git_url(&name) {
+        let usage = match suggested_name(&name) {
+            Some(n) => format!("scadman add {n} {name}"),
+            None => format!("scadman add <NAME> {name}"),
+        };
+        bail!(
+            "`{name}` looks like a git URL, not a package name — usage: `scadman add <NAME> <GIT>`, e.g. `{usage}`"
+        );
+    }
+
     // Load the manifest first, so a bare `add` in a directory with no `scadman.toml` fails
     // fast rather than after a network round-trip to resolve the default branch.
     let mut manifest = load_manifest()?;
@@ -657,6 +671,28 @@ fn add_cmd(
         ),
     }
     Ok(())
+}
+
+/// Whether `s` reads as a git remote rather than a package name: a URL with a scheme
+/// (`https://…`, `file://…`, `ssh://…`) or scp-style `[user@]host:path`, where the `:`
+/// comes before any `/`.
+fn looks_like_git_url(s: &str) -> bool {
+    if s.contains("://") {
+        return true;
+    }
+    match (s.find(':'), s.find('/')) {
+        (Some(colon), Some(slash)) => colon > 0 && colon < slash,
+        _ => false,
+    }
+}
+
+/// The repository basename of a git URL (`…/BOSL2.git` → `BOSL2`), if it is a valid
+/// package name. Used only to show a corrected command, never to pick a name silently.
+fn suggested_name(url: &str) -> Option<String> {
+    let last = url.trim_end_matches('/').rsplit(['/', ':']).next()?;
+    let name = last.strip_suffix(".git").unwrap_or(last);
+    manifest::validate_package_name(name).ok()?;
+    Some(name.to_string())
 }
 
 /// The remote's current default branch (the target of its `HEAD` symref), via
@@ -1186,6 +1222,40 @@ mod tests {
         // A bad/offline URL must surface an error (add_cmd turns it into an actionable
         // "pass --branch/--tag/--rev"), not a wrong branch.
         assert!(default_branch("file:///nonexistent-scadman-repo-xyz").is_err());
+    }
+
+    #[test]
+    fn git_urls_are_told_apart_from_package_names() {
+        for url in [
+            "https://github.com/revarbat/BOSL",
+            "file:///srv/git/lib",
+            "ssh://git@host/o/r.git",
+            "git@github.com:revarbat/BOSL.git",
+        ] {
+            assert!(looks_like_git_url(url), "{url} should read as a URL");
+        }
+        // Real names, including the forms the add command documents, are not URLs.
+        for name in ["BOSL2", "dotSCAD", "my-lib_2", "lib.v2", "a:b"] {
+            assert!(!looks_like_git_url(name), "{name} should read as a name");
+        }
+    }
+
+    #[test]
+    fn suggested_name_is_the_repo_basename() {
+        assert_eq!(
+            suggested_name("https://github.com/revarbat/BOSL").as_deref(),
+            Some("BOSL")
+        );
+        assert_eq!(
+            suggested_name("https://github.com/BelfrySCAD/BOSL2.git/").as_deref(),
+            Some("BOSL2")
+        );
+        assert_eq!(
+            suggested_name("git@github.com:revarbat/BOSL.git").as_deref(),
+            Some("BOSL")
+        );
+        // Nothing usable to suggest.
+        assert_eq!(suggested_name("https://"), None);
     }
 
     #[test]
