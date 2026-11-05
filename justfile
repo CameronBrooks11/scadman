@@ -6,9 +6,11 @@ set dotenv-load := false
 default:
     @just --list
 
-# Install dependencies and tools
+# Install dependencies and tools, and the git hooks from .pre-commit-config.yaml
 setup:
     rustup component add rustfmt clippy
+    @command -v pre-commit >/dev/null 2>&1 || { echo "pre-commit is not installed, so the git hooks cannot be installed. Install it (e.g. 'uv tool install pre-commit' or 'pipx install pre-commit'), then re-run 'just setup'." >&2; exit 1; }
+    pre-commit install
 
 # Format code (mutates working tree — use locally)
 fmt:
