@@ -243,6 +243,41 @@ fn add_remove_and_list() {
 }
 
 #[test]
+fn add_with_a_url_as_the_name_points_at_the_argument_order() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = root.path().join("p");
+    fs::create_dir_all(&proj).unwrap();
+    assert!(
+        scadman(&proj, store.path(), &["init", "--name", "demo"])
+            .status
+            .success()
+    );
+    let before = fs::read_to_string(proj.join("scadman.toml")).unwrap();
+
+    for (url, suggested) in [
+        ("https://github.com/revarbat/BOSL", "BOSL"),
+        ("https://github.com/BelfrySCAD/BOSL2.git", "BOSL2"),
+        ("git@github.com:revarbat/BOSL.git", "BOSL"),
+    ] {
+        let out = scadman(&proj, store.path(), &["add", url]);
+        assert!(!out.status.success(), "`add {url}` should fail");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("looks like a git URL"), "stderr: {err}");
+        assert!(
+            err.contains(&format!("scadman add {suggested} {url}")),
+            "stderr should suggest the corrected command: {err}"
+        );
+    }
+
+    // Nothing was written for any of the rejected forms.
+    assert_eq!(
+        fs::read_to_string(proj.join("scadman.toml")).unwrap(),
+        before
+    );
+}
+
+#[test]
 fn env_reports_path_and_json() {
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();
