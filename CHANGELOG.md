@@ -6,6 +6,14 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- **A manifest and lockfile reference** (`docs/manifest.md`): the `scadman.toml` keys,
+  what `scadman.lock` records, which manifest edits `sync` detects, and where scadman
+  keeps its files. The README gains a quick start and a command table.
+- **`CONTRIBUTING.md`**: setup, the check and test commands, pull-request conventions,
+  and the release steps.
+
 ### Fixed
 
 - **`scadman add <url>` now says the URL is in the name position.** Passing only a

@@ -7,7 +7,7 @@
 scadman is a greenfield, Rust, project-local OpenSCAD dependency and environment
 manager, licensed Apache-2.0. The predecessor tool olman is reference-only — no code
 or metadata inheritance. The first real work was an ecosystem survey (a Python spike
-in a separate private repo, `CameronBrooks11/scadman-survey`) whose outputs — the
+in a separate private repository) whose outputs — the
 findings in [ecosystem-survey.md](ecosystem-survey.md) and the fixture set in
 `fixtures/` — were promoted here once stable.
 
@@ -89,7 +89,7 @@ data would have corrected. The survey's results are in
 ## D7. Repo shape — this repo is the product
 
 **Decision:** this repo is the product (Rust workspace, docs, fixtures). The survey
-lives in a separate private repo, `CameronBrooks11/scadman-survey`.
+lives in a separate private repository.
 
 The survey is throwaway-ish Python at a different quality bar and would pollute a
 repo meant to stay clean; only its stable outputs (findings report, curated fixture

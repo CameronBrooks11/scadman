@@ -30,9 +30,14 @@ Changing a git dependency's pin in your own manifest still needs an explicit
 
 - The whole directory is copied into the store, minus `.git` and symlinks — keep build
   output and nested environments out of the library root.
+- Every change to the directory is stored as a new copy, and nothing prunes the store
+  yet ([#96](https://github.com/CameronBrooks11/scadman/issues/96)). Delete the store
+  when it grows; the next `sync` restores what is needed.
 - Only the root manifest may declare a path dependency; a dependency of your project
   cannot bring one in.
-- A path dependency is a local-development convenience, not a reproducible pin: a
-  lockfile that references one is not portable to another machine.
+- A path dependency is a local-development convenience, not a reproducible pin: the
+  lockfile records the directory's absolute path on your machine, so it is not portable
+  to another one.
+- `scadman update <name>` refuses a path dependency; there is nothing to advance.
 - `--root` and `--on-path` work as with a git source, for a src-layout sibling — see
   [library-roots.md](library-roots.md).
