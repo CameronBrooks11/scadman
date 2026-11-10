@@ -197,7 +197,7 @@ fn list_cmd() -> Result<()> {
         println!("No dependencies declared.");
         return Ok(());
     }
-    let locked = locked_revs();
+    let locked = locked_revs()?;
     for (name, dep) in &manifest.dependencies {
         let spec = match dep {
             Dependency::Git(g) => {
@@ -220,18 +220,17 @@ fn list_cmd() -> Result<()> {
     Ok(())
 }
 
-/// Locked name → resolved rev, from an existing lockfile (empty if none/unreadable).
-fn locked_revs() -> BTreeMap<String, String> {
-    if !Path::new(lockfile::LOCKFILE_FILE).exists() {
-        return BTreeMap::new();
-    }
+/// Locked name → resolved rev, from an existing lockfile (empty if none/unreadable). A
+/// lockfile of an unknown version is an error, not "nothing locked".
+fn locked_revs() -> Result<BTreeMap<String, String>> {
     let Ok(text) = fs::read_to_string(lockfile::LOCKFILE_FILE) else {
-        return BTreeMap::new();
+        return Ok(BTreeMap::new());
     };
-    match Lockfile::from_toml(&text) {
+    check_lockfile_version(&text)?;
+    Ok(match Lockfile::from_toml(&text) {
         Ok(lock) => lock.packages.into_iter().map(|p| (p.name, p.rev)).collect(),
         Err(_) => BTreeMap::new(),
-    }
+    })
 }
 
 fn short(rev: &str) -> &str {
@@ -471,9 +470,12 @@ fn report_lockfile(manifest: &Manifest) {
         println!("lockfile:     not created — run `scadman lock`");
         return;
     }
-    let lock = fs::read_to_string(lockfile::LOCKFILE_FILE)
-        .ok()
-        .and_then(|t| Lockfile::from_toml(&t).ok());
+    let text = fs::read_to_string(lockfile::LOCKFILE_FILE).ok();
+    if let Some(Err(e)) = text.as_deref().map(check_lockfile_version) {
+        println!("lockfile:     {e}");
+        return;
+    }
+    let lock = text.and_then(|t| Lockfile::from_toml(&t).ok());
     match lock {
         Some(lock) => match lock_staleness(manifest, &lock) {
             Some(reason) => {
@@ -596,7 +598,29 @@ struct GraphNode {
 fn load_lockfile() -> Result<Lockfile> {
     let text = fs::read_to_string(lockfile::LOCKFILE_FILE)
         .with_context(|| format!("{} not found — run `scadman lock`", lockfile::LOCKFILE_FILE))?;
-    Lockfile::from_toml(&text).with_context(|| format!("parse {}", lockfile::LOCKFILE_FILE))
+    parse_lockfile(&text)
+}
+
+/// Refuse lockfile text that declares a version this scadman does not understand. Every
+/// reader goes through this, so an older scadman never acts on — or rewrites — a newer
+/// lockfile. Text with no readable version passes; parsing reports what is wrong with it.
+fn check_lockfile_version(text: &str) -> Result<()> {
+    if let Some(found) = lockfile::declared_version(text)
+        && found != lockfile::LOCKFILE_VERSION
+    {
+        bail!(
+            "{} is lockfile version {found} but this scadman understands {} — upgrade scadman",
+            lockfile::LOCKFILE_FILE,
+            lockfile::LOCKFILE_VERSION
+        );
+    }
+    Ok(())
+}
+
+/// Parse lockfile text, checking its version first (see [`check_lockfile_version`]).
+fn parse_lockfile(text: &str) -> Result<Lockfile> {
+    check_lockfile_version(text)?;
+    Lockfile::from_toml(text).with_context(|| format!("parse {}", lockfile::LOCKFILE_FILE))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -768,6 +792,17 @@ fn add_dependency(
 
 fn lock_cmd() -> Result<()> {
     let manifest = load_manifest()?;
+    // `lock` replaces the lockfile without reading it, so check what it is about to
+    // replace: rewriting a newer scadman's lockfile in this format would downgrade it.
+    // A file with no readable version is simply broken, and is regenerated.
+    if let Ok(existing) = fs::read_to_string(lockfile::LOCKFILE_FILE) {
+        check_lockfile_version(&existing).with_context(|| {
+            format!(
+                "not overwriting {} (delete it to write a fresh one)",
+                lockfile::LOCKFILE_FILE
+            )
+        })?;
+    }
     let store = open_store()?;
     let lock = resolve_lock(&manifest, &store)?;
     write_lock(&lock)?;
@@ -834,9 +869,7 @@ fn read_lockfile_opt() -> Result<Option<Lockfile>> {
         return Ok(None);
     }
     let text = fs::read_to_string(lockfile::LOCKFILE_FILE)?;
-    Ok(Some(Lockfile::from_toml(&text).with_context(|| {
-        format!("parse {}", lockfile::LOCKFILE_FILE)
-    })?))
+    Ok(Some(parse_lockfile(&text)?))
 }
 
 /// Print the per-package rev deltas between the previous lock and the updated one.
@@ -1079,16 +1112,7 @@ fn read_or_lock(store: &Store) -> Result<Lockfile> {
     let manifest = load_manifest()?;
     if Path::new(lockfile::LOCKFILE_FILE).exists() {
         let text = fs::read_to_string(lockfile::LOCKFILE_FILE)?;
-        let lock = Lockfile::from_toml(&text)
-            .with_context(|| format!("parse {}", lockfile::LOCKFILE_FILE))?;
-        if lock.version != lockfile::LOCKFILE_VERSION {
-            bail!(
-                "{} is lockfile version {} but this scadman understands {} — upgrade scadman",
-                lockfile::LOCKFILE_FILE,
-                lock.version,
-                lockfile::LOCKFILE_VERSION
-            );
-        }
+        let lock = parse_lockfile(&text)?;
         // A path dependency tracks a local directory's current content, which the lockfile
         // cannot pin. Re-resolve so an edit to a sibling library is picked up (the point of
         // co-developing with path deps). Git dependencies are held at their locked revisions

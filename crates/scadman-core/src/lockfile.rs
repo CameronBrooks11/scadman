@@ -60,6 +60,19 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
+/// The format version a lockfile's text declares, if it has a readable one.
+///
+/// Read on its own, without requiring the rest of the file to fit today's shape: a
+/// lockfile from a newer scadman may not parse as a [`Lockfile`] at all, and "this is
+/// version 3" is the useful thing to say about it.
+pub fn declared_version(text: &str) -> Option<u32> {
+    #[derive(Deserialize)]
+    struct VersionOnly {
+        version: u32,
+    }
+    toml::from_str::<VersionOnly>(text).ok().map(|v| v.version)
+}
+
 impl Lockfile {
     /// An empty lockfile at the current format version.
     pub fn new() -> Self {
@@ -100,6 +113,18 @@ mod tests {
             root: ".".to_string(),
             on_path: false,
         }
+    }
+
+    #[test]
+    fn declared_version_is_read_even_when_the_rest_does_not_fit() {
+        assert_eq!(declared_version("version = 1\n"), Some(1));
+        // A shape this scadman cannot parse as a Lockfile still yields its version.
+        let newer = "version = 7\npackage = \"not a list\"\n";
+        assert!(Lockfile::from_toml(newer).is_err());
+        assert_eq!(declared_version(newer), Some(7));
+        // No readable version: not a lockfile we can say anything about.
+        assert_eq!(declared_version("not toml = = ="), None);
+        assert_eq!(declared_version("package = []\n"), None);
     }
 
     #[test]

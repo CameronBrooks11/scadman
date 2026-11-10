@@ -440,6 +440,106 @@ fn doctor_distinguishes_a_broken_manifest_from_a_missing_one() {
 }
 
 #[test]
+fn every_command_refuses_a_lockfile_of_an_unknown_version() {
+    // Only sync/run/env used to check the version. graph, list and doctor read a newer
+    // lockfile without comment, and `update <name>` rewrote it in the old format.
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, _) = make_lib(root.path());
+    let branch = branch_of(&lib);
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", branch = \"{branch}\" }}\n",
+            lib.display()
+        ),
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    let lock_path = proj.join("scadman.lock");
+    let newer = fs::read_to_string(&lock_path)
+        .unwrap()
+        .replacen("version = 1", "version = 99", 1);
+    assert!(newer.starts_with("version = 99"), "fixture: {newer}");
+    fs::write(&lock_path, &newer).unwrap();
+
+    // Give `update` something it would otherwise move.
+    fs::write(lib.join("more.scad"), "// more\n").unwrap();
+    commit_all(&lib, "more");
+
+    for args in [
+        &["sync"][..],
+        &["graph"],
+        &["list"],
+        &["update", "mylib"],
+        &["update"],
+        &["lock"],
+    ] {
+        let out = scadman(&proj, store.path(), args);
+        assert!(!out.status.success(), "`{args:?}` should refuse");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("version 99"),
+            "`{args:?}` should name the version: {err}"
+        );
+        assert_eq!(
+            fs::read_to_string(&lock_path).unwrap(),
+            newer,
+            "`{args:?}` must leave the newer lockfile untouched"
+        );
+    }
+
+    let out = scadman(&proj, store.path(), &["doctor"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("lockfile:"))
+        .expect("doctor prints a lockfile line");
+    assert!(
+        line.contains("version 99") && !line.contains("up to date"),
+        "doctor should report the version, not `up to date`: {line}"
+    );
+}
+
+#[test]
+fn a_newer_lockfile_that_does_not_parse_is_reported_by_version() {
+    // A later format may not fit today's shape at all. The version is still readable,
+    // and "upgrade scadman" is more use than a parse error about a field.
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = project_with(root.path(), "[project]\nname = \"demo\"\n");
+    fs::write(
+        proj.join("scadman.lock"),
+        "version = 2\npackage = \"not a list any more\"\n",
+    )
+    .unwrap();
+    let out = scadman(&proj, store.path(), &["graph"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("version 2"), "should name the version: {err}");
+}
+
+#[test]
+fn lock_replaces_a_lockfile_that_is_not_a_lockfile() {
+    // Refusing to overwrite is for a lockfile from a newer scadman. A file with no
+    // readable version is just broken, and regenerating it is the fix.
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = project_with(root.path(), "[project]\nname = \"demo\"\n");
+    fs::write(proj.join("scadman.lock"), "this is not toml = = =\n").unwrap();
+    let out = scadman(&proj, store.path(), &["lock"]);
+    assert!(
+        out.status.success(),
+        "lock: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        fs::read_to_string(proj.join("scadman.lock"))
+            .unwrap()
+            .starts_with("version = 1")
+    );
+}
+
+#[test]
 fn lock_rejects_a_git_dependency_with_two_refs() {
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();

@@ -38,6 +38,12 @@ All notable changes to scadman are recorded here. Format loosely follows
   own when the tag moved upstream, and `sync` failed without the network. Whether a
   reference is a commit now comes from the manifest key it was declared under, not
   from its spelling.
+- **Every command now refuses a lockfile of an unknown version.** Only `sync`, `run` and
+  `env` checked it. `graph`, `list` and `doctor` read a newer lockfile without comment,
+  and `update <name>` used it as its base and wrote it back in the old format. `lock`
+  and `update` no longer overwrite one either; the error says to upgrade scadman or
+  delete the file. The version is read on its own, so a newer lockfile that does not
+  parse is still reported by its version.
 - **`scadman add <url>` now says the URL is in the name position.** Passing only a
   git URL used to fail with the package-name character error, which read as if the
   URL were malformed. It now prints `` `<url>` looks like a git URL, not a package
