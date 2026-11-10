@@ -104,6 +104,10 @@ hash = "…"
 | `dependencies` | Names of the libraries this one declares, if any. |
 | `root`, `on_path` | Copied from the manifest when set. |
 
+`version` is the lockfile format. Every command refuses a lockfile whose version it
+does not know, and `lock` and `update` will not overwrite one: upgrade scadman, or
+delete the file to write a fresh one.
+
 On a machine that does not have a library's content yet, `sync` fetches `rev` from
 `source` and refuses to continue if the content does not hash to `hash`.
 
