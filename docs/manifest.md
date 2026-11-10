@@ -37,7 +37,7 @@ A git dependency:
 | Key | Required | Meaning |
 |---|---|---|
 | `git` | yes | The repository URL. |
-| `rev` | one of these three | An exact commit, as the full 40-character hash ([#90](https://github.com/CameronBrooks11/scadman/issues/90)). Never moves. |
+| `rev` | one of these three | An exact commit, as the full 40-character hash; an abbreviated one is refused. Never moves. |
 | `tag` | | A tag. Locked to the commit it points at; `scadman update` re-reads it. |
 | `branch` | | A branch. Locked to its tip at lock time; `scadman update` advances it. |
 | `root` | no | Subdirectory to expose instead of the repository root. See [library-roots.md](library-roots.md). |

@@ -118,6 +118,22 @@ pub fn validate_package_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate that a `rev` is a full commit hash: 40 hex digits (SHA-1), or 64 (SHA-256).
+///
+/// git fetches a commit only by its full object name. An abbreviated one is taken for a
+/// ref name and fails with "couldn't find remote ref", so it is refused here with a
+/// message that says what to write instead.
+pub fn validate_commit_hash(rev: &str) -> Result<(), String> {
+    let full = matches!(rev.len(), 40 | 64) && rev.bytes().all(|b| b.is_ascii_hexdigit());
+    if full {
+        Ok(())
+    } else {
+        Err(format!(
+            "rev `{rev}` is not a full commit hash — give all 40 hex digits, or use a tag or branch"
+        ))
+    }
+}
+
 /// Validate that a library-root subdir stays within the package (it is joined onto the
 /// store path and exposed to OpenSCAD).
 pub fn validate_library_root(root: &str) -> Result<(), String> {
@@ -294,7 +310,7 @@ openscad = ">=2021.01"
 
 [dependencies]
 BOSL2 = "^2.0"
-Round-Anything = { git = "https://github.com/Irev-Dev/Round-Anything", rev = "061fef7" }
+Round-Anything = { git = "https://github.com/Irev-Dev/Round-Anything", rev = "061fef7c429628808e847696bb345a9b0ec6e279" }
 local-lib = { path = "../local-lib" }
 "#;
         let m = Manifest::from_toml(text).expect("parse");
@@ -308,7 +324,7 @@ local-lib = { path = "../local-lib" }
             m.dependencies["Round-Anything"],
             Dependency::Git(GitDependency {
                 git: "https://github.com/Irev-Dev/Round-Anything".to_string(),
-                rev: Some("061fef7".to_string()),
+                rev: Some("061fef7c429628808e847696bb345a9b0ec6e279".to_string()),
                 tag: None,
                 branch: None,
                 root: None,
@@ -333,6 +349,27 @@ local-lib = { path = "../local-lib" }
         let text = m.to_toml().expect("serialize");
         let parsed = Manifest::from_toml(&text).expect("reparse");
         assert_eq!(m, parsed);
+    }
+
+    #[test]
+    fn a_rev_must_be_a_full_commit_hash() {
+        let sha1 = "061fef7c429628808e847696bb345a9b0ec6e279";
+        assert!(validate_commit_hash(sha1).is_ok());
+        assert!(validate_commit_hash(&sha1.to_uppercase()).is_ok());
+        assert!(validate_commit_hash(&"a".repeat(64)).is_ok()); // SHA-256 repositories
+        for bad in [
+            "",
+            "061fef7",
+            &sha1[..39],
+            &format!("{sha1}0"),
+            "main",
+            "v1.0",
+        ] {
+            let err = validate_commit_hash(bad).unwrap_err();
+            assert!(err.contains("full commit hash"), "`{bad}`: {err}");
+        }
+        // 40 characters that are not hex is still not a hash.
+        assert!(validate_commit_hash(&"z".repeat(40)).is_err());
     }
 
     #[test]

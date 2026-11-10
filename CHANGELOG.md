@@ -65,6 +65,12 @@ All notable changes to scadman are recorded here. Format loosely follows
   was "not in the store — run a sync". `lock` now refuses both, for any dependency
   from any manifest, and says which root is wrong. A bad root is also no longer
   reported as an invalid dependency name.
+- **An abbreviated `rev` is refused with a message that says so.** git fetches a
+  commit only by its full name, so `rev = "061fef7"` could never lock: it failed with
+  git's `couldn't find remote ref`. `add --rev` accepted it anyway, and `sync`
+  prefix-matched it against the lockfile as if it were supported. `add` and `lock` now
+  ask for the full 40-digit hash, or a tag or branch, and a `rev` is compared with the
+  lockfile whole.
 - **`scadman add <url>` now says the URL is in the name position.** Passing only a
   git URL used to fail with the package-name character error, which read as if the
   URL were malformed. It now prints `` `<url>` looks like a git URL, not a package

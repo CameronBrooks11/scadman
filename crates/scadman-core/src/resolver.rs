@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 
 use crate::lockfile::{LOCKFILE_VERSION, LockedPackage, Lockfile, PATH_SOURCE_PREFIX};
 use crate::manifest::{
-    Dependency, GitDependency, MANIFEST_FILE, Manifest, PathDependency, validate_library_root,
-    validate_package_name,
+    Dependency, GitDependency, MANIFEST_FILE, Manifest, PathDependency, validate_commit_hash,
+    validate_library_root, validate_package_name,
 };
 use crate::source::fetch_git;
 use crate::store::Store;
@@ -80,6 +80,11 @@ impl GitFetcher {
 
 impl Fetcher for GitFetcher {
     fn fetch(&self, url: &str, reference: &GitRef) -> io::Result<Fetched> {
+        // git cannot fetch an abbreviated commit; say so rather than hand it over and
+        // relay "couldn't find remote ref".
+        if let GitRef::Rev(rev) = reference {
+            validate_commit_hash(rev).map_err(io::Error::other)?;
+        }
         let acquired = fetch_git(&self.store, url, reference.as_str())?;
         Ok(Fetched {
             rev: acquired.rev,
@@ -290,11 +295,11 @@ pub fn lock_staleness(manifest: &Manifest, lock: &Lockfile) -> Option<String> {
                 ));
             }
             Some(pkg) => {
-                // An exact `rev` change is knowable without re-resolving. The lock stores
-                // the full SHA and the manifest rev may be abbreviated, so a prefix match
-                // is fresh.
+                // An exact `rev` change is knowable without re-resolving. A `rev` is a
+                // full commit hash (an abbreviated one cannot be fetched), so it is
+                // compared whole: a prefix of the locked commit is a different pin.
                 if let Some(requested) = &git.rev
-                    && !pkg.rev.starts_with(requested)
+                    && !pkg.rev.eq_ignore_ascii_case(requested)
                 {
                     return Some(format!(
                         "`{name}` rev changed (manifest wants {requested}, lock has {})",
@@ -972,8 +977,11 @@ mod tests {
             lock
         };
 
-        // Matching source, and the manifest rev is a prefix of the locked SHA → fresh.
-        assert!(lock_staleness(&root, &one("https://h/A", "abc123def456")).is_none());
+        // Matching source and the same rev (in either letter case) → fresh.
+        assert!(lock_staleness(&root, &one("https://h/A", "abc123")).is_none());
+        assert!(lock_staleness(&root, &one("https://h/A", "ABC123")).is_none());
+        // A manifest rev that is only a prefix of the locked commit is a different pin.
+        assert!(lock_staleness(&root, &one("https://h/A", "abc123def456")).is_some());
         // Different source for the same name → stale.
         assert!(lock_staleness(&root, &one("https://h/OTHER", "abc123")).is_some());
         // Same source but a different rev → stale.

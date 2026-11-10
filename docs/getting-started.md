@@ -61,8 +61,8 @@ lives.
 | `scadman doctor` | Report on OpenSCAD, the store, the manifest, the lockfile and the environment. |
 
 A branch or tag is pinned to an exact commit at lock time and stays there until you run
-`scadman update`. A `--rev` pin never moves; give it the full 40-character commit hash
-([#90](https://github.com/CameronBrooks11/scadman/issues/90)).
+`scadman update`. A `--rev` pin never moves; give it the full 40-character commit hash,
+since an abbreviated one is refused.
 
 After editing `scadman.toml`, by hand or with `add` and `remove`, run `scadman lock`.
 `sync` and `run` stop with an "out of date" error for some stale lockfiles, but they do
