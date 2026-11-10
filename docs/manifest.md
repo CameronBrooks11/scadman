@@ -46,7 +46,8 @@ A git dependency:
 A path dependency takes `path` (a directory, relative to the project or absolute) and
 the same optional `root` and `on_path`. See [path-dependencies.md](path-dependencies.md).
 
-A misspelled or unknown key in a dependency table is an error. A bare version string
+An unknown table or key anywhere in your `scadman.toml` is an error, so a misspelled
+`[dependencies]` header or key cannot be silently ignored. A bare version string
 (`BOSL2 = "^2.0"`) is reserved for a future registry and is refused at lock time.
 
 ### One version per library
@@ -69,7 +70,9 @@ the same way everywhere.
 ### Dependencies of dependencies
 
 If a git dependency ships its own `scadman.toml`, its dependencies are resolved too,
-under the same one-version rule. It may not declare path dependencies.
+under the same one-version rule. It may not declare path dependencies. Unknown keys
+in a dependency's manifest are ignored, apart from those inside its dependency tables,
+so a library written for a newer scadman stays readable.
 
 Almost no OpenSCAD library ships a manifest today. When a library imports another
 without declaring it, `sync` names the missing library and you add it to your own

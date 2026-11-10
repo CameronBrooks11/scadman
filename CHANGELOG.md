@@ -20,6 +20,13 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ### Fixed
 
+- **An unknown table or key in `scadman.toml` is now an error.** A misspelled
+  `[dependencies]` header used to read as a project with no dependencies: `list`,
+  `lock` and `doctor` all reported success. The same went for a misspelled key under
+  `[project]`. The error names the table or key and its line. A dependency's own
+  `scadman.toml` still tolerates unknown keys outside its dependency tables, so a
+  library written for a newer scadman stays readable. **Breaking** for a manifest that
+  carried extra keys: remove them.
 - **`scadman add <url>` now says the URL is in the name position.** Passing only a
   git URL used to fail with the package-name character error, which read as if the
   URL were malformed. It now prints `` `<url>` looks like a git URL, not a package
