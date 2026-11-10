@@ -55,6 +55,9 @@ All notable changes to scadman are recorded here. Format loosely follows
   package to that directory and put it on `OPENSCADPATH`. A hash must now be 64
   lowercase hex digits, checked wherever the lockfile is read and again where the
   environment is built, before the existing environment is touched.
+- **A failed copy into the store cleans up after itself.** When an insert failed
+  partway (a full disk, for one), its `.staging-*` directory stayed in the store for
+  good: the name is unique to the run, so nothing later reused or removed it.
 - **`scadman add <url>` now says the URL is in the name position.** Passing only a
   git URL used to fail with the package-name character error, which read as if the
   URL were malformed. It now prints `` `<url>` looks like a git URL, not a package
