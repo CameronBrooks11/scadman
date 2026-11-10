@@ -15,8 +15,8 @@
 //! spurious "undeclared dependency" warning. An import is *internal* if it resolves within
 //! its own package (relative to the importing file, or from the package root); such edges
 //! are followed but never flagged. A qualified import (`<name/…>`) that resolves neither
-//! internally nor to a provided package, and is reached from within a dependency, is
-//! reported. Imports in the project's own files seed the walk but are not themselves
+//! internally, nor to a provided package, nor from the root of an `on_path` package, and
+//! is reached from within a dependency, is reported. Imports in the project's own files seed the walk but are not themselves
 //! flagged (the project may lean on globally-installed libraries by choice).
 //!
 //! It also honestly bounds scadman's guarantee: `OPENSCADPATH` cannot stop OpenSCAD from
@@ -38,6 +38,9 @@ static IMPORT: LazyLock<Regex> =
 pub struct Installed {
     pub name: String,
     pub path: std::path::PathBuf,
+    /// Whether this package's root is itself on `OPENSCADPATH` (the manifest's `on_path`),
+    /// so its files can be imported root-relative by anything, not only as `<name/…>`.
+    pub on_path: bool,
 }
 
 /// A qualified import referencing a library root the resolution does not provide.
@@ -88,6 +91,13 @@ pub fn unmet_imports(project: &Path, installed: &[Installed]) -> Vec<UnmetImport
         .skip(1)
         .map(|(i, s)| (s.name.as_str(), i))
         .collect();
+    // Scopes whose root is itself on OPENSCADPATH. `installed[i]` is `scopes[i + 1]`.
+    let on_path: Vec<usize> = installed
+        .iter()
+        .enumerate()
+        .filter(|(_, pkg)| pkg.on_path)
+        .map(|(i, _)| i + 1)
+        .collect();
 
     let mut visited: HashSet<(usize, String)> = HashSet::new();
     let mut queue: VecDeque<(usize, String)> = VecDeque::new();
@@ -135,6 +145,17 @@ pub fn unmet_imports(project: &Path, installed: &[Installed]) -> Vec<UnmetImport
                 if scopes[j].files.contains(&next) {
                     enqueue(j, next, &mut visited, &mut queue);
                 }
+                continue;
+            }
+            // Provided from the root of an on_path package? OpenSCAD searches those roots
+            // after the environment's, so `<util/x.scad>` resolves when an on_path library
+            // ships `util/x.scad`, whoever the importer is. Follow it.
+            let from_any_root = norm(target);
+            if let Some(&j) = on_path
+                .iter()
+                .find(|&&j| scopes[j].files.contains(&from_any_root))
+            {
+                enqueue(j, from_any_root, &mut visited, &mut queue);
                 continue;
             }
             // Unmet — but only surfaced from within a dependency, not the project's own code.
@@ -318,6 +339,13 @@ mod tests {
             Installed {
                 name: name.to_string(),
                 path,
+                on_path: false,
+            }
+        }
+        fn on_path_package(&self, name: &str) -> Installed {
+            Installed {
+                on_path: true,
+                ..self.package(name)
             }
         }
         fn write_pkg(&self, pkg: &Installed, rel: &str, contents: &str) {
@@ -424,6 +452,68 @@ mod tests {
         fx.write_pkg(&bosl2, "shapes.scad", "include <BOSL2/std.scad>\n");
         fx.write_pkg(&bosl2, "std.scad", "// std\n");
         assert!(unmet_imports(&project, &[bosl2]).is_empty());
+    }
+
+    #[test]
+    fn an_import_provided_by_an_on_path_package_is_not_reported() {
+        // `A` imports `<util/x.scad>`. No package is named `util`, but `dot` is on_path and
+        // ships `util/x.scad` at its root, so OpenSCAD resolves it. The scan used to say
+        // "`A` imports `util/` but it is not in your dependencies".
+        let fx = Fixture::new();
+        let project = fx.write_project("main.scad", "use <A/a.scad>\n");
+        let a = fx.package("A");
+        fx.write_pkg(&a, "a.scad", "use <util/x.scad>\n");
+        let dot = fx.on_path_package("dot");
+        fx.write_pkg(&dot, "util/x.scad", "// x\n");
+        let unmet = unmet_imports(&project, &[a, dot]);
+        assert!(
+            unmet.is_empty(),
+            "util/ is provided by on_path `dot`: {unmet:?}"
+        );
+    }
+
+    #[test]
+    fn the_same_import_is_reported_when_the_provider_is_not_on_path() {
+        // The control: identical files, but `dot` is exposed only as `<dot/…>`.
+        let fx = Fixture::new();
+        let project = fx.write_project("main.scad", "use <A/a.scad>\n");
+        let a = fx.package("A");
+        fx.write_pkg(&a, "a.scad", "use <util/x.scad>\n");
+        let dot = fx.package("dot");
+        fx.write_pkg(&dot, "util/x.scad", "// x\n");
+        let unmet = unmet_imports(&project, &[a, dot]);
+        assert_eq!(unmet.len(), 1, "{unmet:?}");
+        assert_eq!(unmet[0].library, "util");
+        assert_eq!(unmet[0].package, "A");
+    }
+
+    #[test]
+    fn an_on_path_import_that_does_not_exist_is_still_reported() {
+        // on_path does not excuse a path the on_path package does not actually ship.
+        let fx = Fixture::new();
+        let project = fx.write_project("main.scad", "use <A/a.scad>\n");
+        let a = fx.package("A");
+        fx.write_pkg(&a, "a.scad", "use <util/missing.scad>\n");
+        let dot = fx.on_path_package("dot");
+        fx.write_pkg(&dot, "util/x.scad", "// x\n");
+        let unmet = unmet_imports(&project, &[a, dot]);
+        assert_eq!(unmet.len(), 1, "{unmet:?}");
+        assert_eq!(unmet[0].library, "util");
+    }
+
+    #[test]
+    fn imports_reached_through_an_on_path_root_are_followed() {
+        // The project imports an on_path library root-relative. That file is now reached,
+        // so an undeclared library it pulls in is reported, against the on_path package.
+        let fx = Fixture::new();
+        let project = fx.write_project("main.scad", "use <util/x.scad>\n");
+        let dot = fx.on_path_package("dot");
+        fx.write_pkg(&dot, "util/x.scad", "use <scad-utils/lists.scad>\n");
+        let unmet = unmet_imports(&project, &[dot]);
+        assert_eq!(unmet.len(), 1, "{unmet:?}");
+        assert_eq!(unmet[0].package, "dot");
+        assert_eq!(unmet[0].library, "scad-utils");
+        assert_eq!(unmet[0].file, "util/x.scad");
     }
 
     #[test]

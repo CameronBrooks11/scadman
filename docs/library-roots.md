@@ -66,6 +66,7 @@ them). The include-scan covers the *transitive* case: it follows the project's i
 each dependency and names any undeclared library those dependency files reach, so a
 manifest-less lib's own hidden dependency surfaces as a precise warning rather than a raw
 failure. Because the scan is reachability-based, it reports only libraries the used files
-actually reach — never a dependency's unused internals. A future registry/adapter layer can
+actually reach — never a dependency's unused internals. An import that an `on_path`
+library provides from its root counts as provided, whichever library makes it. A future registry/adapter layer can
 declare a library's layout on its behalf, so consumers don't have to — but the manifest
 knobs are the primitive that layer would populate.

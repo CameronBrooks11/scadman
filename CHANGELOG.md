@@ -71,6 +71,12 @@ All notable changes to scadman are recorded here. Format loosely follows
   prefix-matched it against the lockfile as if it were supported. `add` and `lock` now
   ask for the full 40-digit hash, or a tag or branch, and a `rev` is compared with the
   lockfile whole.
+- **The include-scan knows what an `on_path` library provides.** When a dependency
+  imported a path such as `<util/x.scad>` that an `on_path` library ships at its root,
+  OpenSCAD resolved it and `sync` still warned that the dependency "imports `util/`
+  but it is not in your dependencies", naming a library that does not exist. Such an
+  import is now followed instead of reported, so scadman's warnings match what
+  OpenSCAD can and cannot open.
 - **`scadman add <url>` now says the URL is in the name position.** Passing only a
   git URL used to fail with the package-name character error, which read as if the
   URL were malformed. It now prints `` `<url>` looks like a git URL, not a package
