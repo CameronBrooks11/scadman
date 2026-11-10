@@ -72,17 +72,20 @@ contained:
 **Does:** recursively collect deps (root + any dep shipping a `scadman.toml`); resolve
 every ref → exact SHA at lock time; write lockfile entries `{identity, source, commit,
 content-hash}`; enforce one identity → one rev; detect identity collisions (same name,
-different canonical URL) and cycles; deterministic output. Plus the post-install
-include-scan.
+different canonical URL); terminate on cycles; deterministic output. Plus the
+post-install include-scan.
 
 **Does not:** solve/compare/order versions; backtrack or learn clauses; auto-resolve
 conflicts; rewrite source; nest versions; touch a registry; manage global installs.
 
 ## Settled decisions
 
-1. **Identity = name bound to canonical source URL, URL authoritative**, with a documented
-   normalization rule (https/ssh, `.git` suffix, case; watch GitHub renames/transfers that
-   redirect). This is the one choice that becomes a lockfile migration if wrong — fixed now.
+1. **Identity = name bound to canonical source URL, URL authoritative.** This is the one
+   choice that becomes a lockfile migration if wrong. As built, normalization strips a
+   trailing slash and a `.git` suffix only. Unifying https/ssh and letter case, and
+   following GitHub renames and transfers, was planned as part of this rule and is not
+   implemented: two spellings of one repository are two identities
+   ([#98](https://github.com/CameronBrooks11/scadman/issues/98)).
 2. **Manifest-less transitive deps:** the user declares them directly; the include-scan
    guides them. No curated metadata overlay in v1.
 3. **Overrides:** deferred entirely. Dependency tables reject unknown keys, so adding
