@@ -2,7 +2,7 @@
 
 > Design record — the load-bearing choices made before and during early development,
 > kept as history. Not user documentation; to use scadman, start at the
-> [README](../README.md).
+> [Getting started](getting-started.md).
 
 scadman is a greenfield, Rust, project-local OpenSCAD dependency and environment
 manager, licensed Apache-2.0. The predecessor tool olman is reference-only — no code
