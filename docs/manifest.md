@@ -113,12 +113,15 @@ On a machine that does not have a library's content yet, `sync` fetches `rev` fr
 
 `sync`, `run` and `env` use the lockfile as it is. They create it if it is missing, and
 rewrite it when a path dependency's content has changed. They stop and ask for
-`scadman lock` when the manifest declares a library the lockfile lacks, or a library's
-source, `rev`, `root` or `on_path` no longer matches. Two edits are not detected: a
-changed `tag` or `branch` name on an unchanged URL, and a removed dependency, which
-stays locked and available until the next `lock`
-([#94](https://github.com/CameronBrooks11/scadman/issues/94)). Running `scadman lock`
-after every manifest edit covers all of these.
+`scadman lock` when the manifest and the lockfile disagree:
+
+- the manifest declares a library the lockfile lacks;
+- the lockfile holds a library the manifest no longer leads to, as after
+  `scadman remove`;
+- a library's source, `rev`, `root` or `on_path` no longer matches.
+
+One edit is not detected: a changed `tag` or `branch` name on an unchanged URL. Running
+`scadman lock` after every manifest edit covers it.
 
 ## Where scadman keeps things
 

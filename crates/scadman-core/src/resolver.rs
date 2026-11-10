@@ -265,9 +265,9 @@ pub fn canonical_url(url: &str) -> String {
 /// Report why `lock` is out of date with `manifest`, if it is.
 ///
 /// Checks that every declared git dependency has a lock entry with the same identity and,
-/// for an exact `rev` pin, the same commit. It does not detect a changed tag/branch on an
-/// unchanged URL (that needs re-resolution), nor prune a removed dependency (a harmless
-/// extra pin).
+/// for an exact `rev` pin, the same commit; and that the lock holds no package the
+/// manifest no longer leads to (a removed dependency). It does not detect a changed
+/// tag/branch on an unchanged URL (that needs re-resolution).
 pub fn lock_staleness(manifest: &Manifest, lock: &Lockfile) -> Option<String> {
     for (name, dep) in &manifest.dependencies {
         let Dependency::Git(git) = dep else {
@@ -310,7 +310,31 @@ pub fn lock_staleness(manifest: &Manifest, lock: &Lockfile) -> Option<String> {
             }
         }
     }
-    None
+    orphaned_package(manifest, lock)
+        .map(|name| format!("`{name}` is locked but no longer declared"))
+}
+
+/// The first locked package (in lockfile order) that nothing requires: neither a manifest
+/// dependency nor reachable from one through the lock's own `dependencies` edges. That is
+/// what `scadman remove` leaves behind until the next `lock`. A package another one
+/// depends on is not an orphan, however deep.
+fn orphaned_package<'a>(manifest: &Manifest, lock: &'a Lockfile) -> Option<&'a str> {
+    let by_name: BTreeMap<&str, &LockedPackage> =
+        lock.packages.iter().map(|p| (p.name.as_str(), p)).collect();
+    let mut required: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut pending: Vec<&str> = manifest.dependencies.keys().map(String::as_str).collect();
+    while let Some(name) = pending.pop() {
+        if !required.insert(name) {
+            continue; // already walked (also what stops a dependency cycle)
+        }
+        if let Some(pkg) = by_name.get(name) {
+            pending.extend(pkg.dependencies.iter().map(String::as_str));
+        }
+    }
+    lock.packages
+        .iter()
+        .map(|p| p.name.as_str())
+        .find(|name| !required.contains(name))
 }
 
 /// Resolve a manifest into a pinned set — one version per identity.
@@ -930,6 +954,59 @@ mod tests {
         assert!(lock_staleness(&root, &one("https://h/OTHER", "abc123")).is_some());
         // Same source but a different rev → stale.
         assert!(lock_staleness(&root, &one("https://h/A", "999999")).is_some());
+    }
+
+    /// A lock entry with the given direct dependencies (for the orphan tests).
+    fn entry(name: &str, deps: &[&str]) -> LockedPackage {
+        LockedPackage {
+            name: name.to_string(),
+            source: format!("https://h/{name}"),
+            rev: "abc123".to_string(),
+            hash: "h".to_string(),
+            dependencies: deps.iter().map(|d| d.to_string()).collect(),
+            root: ".".to_string(),
+            on_path: false,
+        }
+    }
+
+    #[test]
+    fn lock_staleness_detects_an_entry_the_manifest_no_longer_declares() {
+        // `A` was removed from the manifest; the lock still pins it. That used to count
+        // as fresh ("a harmless extra pin"), so sync went on exposing the library.
+        let root = manifest("[project]\nname = \"p\"\n");
+        let mut lock = Lockfile::new();
+        lock.packages.push(entry("A", &[]));
+        let reason = lock_staleness(&root, &lock).expect("an orphan makes the lock stale");
+        assert!(reason.contains("`A`"), "names the orphan: {reason}");
+    }
+
+    #[test]
+    fn lock_staleness_does_not_mistake_a_transitive_package_for_an_orphan() {
+        // The manifest declares only A. B and C are in the lock because A needs B and B
+        // needs C; neither is an orphan. D is reachable from nothing.
+        let root = manifest(
+            "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"abc123\" }\n",
+        );
+        let mut lock = Lockfile::new();
+        lock.packages.push(entry("A", &["B"]));
+        lock.packages.push(entry("B", &["C"]));
+        lock.packages.push(entry("C", &["A"])); // a cycle must not hang the walk
+        assert_eq!(lock_staleness(&root, &lock), None);
+
+        lock.packages.push(entry("D", &[]));
+        let reason = lock_staleness(&root, &lock).expect("D is an orphan");
+        assert!(reason.contains("`D`"), "{reason}");
+    }
+
+    #[test]
+    fn lock_staleness_counts_path_dependencies_as_roots() {
+        // A path dependency's own entry, and what it pulls in, are not orphans.
+        let root =
+            manifest("[project]\nname = \"p\"\n[dependencies]\nsib = { path = \"../sib\" }\n");
+        let mut lock = Lockfile::new();
+        lock.packages.push(entry("sib", &["Util"]));
+        lock.packages.push(entry("Util", &[]));
+        assert_eq!(lock_staleness(&root, &lock), None);
     }
 
     #[test]
