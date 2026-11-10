@@ -7,10 +7,11 @@ Instructions for AI coding agents working in this repository.
 scadman is a project-oriented package and dependency manager for OpenSCAD — a Rust
 core plus a single-binary CLI. It treats an OpenSCAD project as a reproducible unit
 (manifest + lockfile) rather than a global pile of installed libraries. See
-[README.md](README.md) for usage, [docs/DECISIONS.md](docs/DECISIONS.md) for the
-product model and foundational decisions, and
-[docs/ecosystem-survey.md](docs/ecosystem-survey.md) for the evidence the design is
-grounded in.
+[README.md](README.md) for usage, [docs/manifest.md](docs/manifest.md) for the file
+formats, [docs/DECISIONS.md](docs/DECISIONS.md) for the product model and foundational
+decisions, and [docs/ecosystem-survey.md](docs/ecosystem-survey.md) for the evidence the
+design is grounded in. [CONTRIBUTING.md](CONTRIBUTING.md) covers the pull-request,
+changelog and release steps.
 
 ## Stack
 
@@ -21,9 +22,9 @@ grounded in.
 
 ```
 crates/
-  scadman-core/    # data model + logic: manifest, lockfile, resolver, environment
-  scadman-cli/     # the `scadman` binary
-docs/              # user guides (library roots, path deps) + design records
+  scadman-core/    # data model + logic: manifest, lockfile, resolver, store, environment, include-scan
+  scadman-cli/     # the `scadman` binary + end-to-end tests
+docs/              # user guides (manifest, library roots, path deps) + design records
 fixtures/          # archetype libraries pinned for tests (references, not vendored)
 ```
 
@@ -32,7 +33,7 @@ fixtures/          # archetype libraries pinned for tests (references, not vendo
 ```sh
 just setup        # rustup components (rustfmt, clippy) + pre-commit git hooks
 just fmt          # format
-just check        # fmt-check + clippy -D warnings (CI-equivalent)
+just check        # fmt-check + clippy -D warnings (stricter than CI, where clippy is advisory)
 just test         # cargo test
 just build        # build all crates
 just run init     # run the CLI (args pass through, e.g. `just run add BOSL2 <url>`)
@@ -42,6 +43,8 @@ just run init     # run the CLI (args pass through, e.g. `just run add BOSL2 <ur
 
 - Format before committing; `just check && just test` must pass. Never bypass hooks.
 - Conventional Commits (`type(scope): subject`). One logical change per commit.
+- A user-visible change gets a line under `## [Unreleased]` in `CHANGELOG.md`, and the
+  docs that describe the behaviour move in the same change.
 - Keep the core library free of CLI/IO concerns where practical; the CLI is a thin shell.
 
 ## Constraints (design guardrails from the survey + decisions)
