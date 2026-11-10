@@ -9,9 +9,9 @@ use std::process::Command as ProcCommand;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use scadman_core::{
-    Dependency, Environment, Fetched, Fetcher, GitDependency, GitFetcher, Installed, Lockfile,
-    Manifest, Store, build_environment, canonical_url, fetch_git, lock_staleness, lockfile,
-    manifest, resolve, unmet_imports,
+    Dependency, Environment, Fetched, Fetcher, GitDependency, GitFetcher, GitRef, Installed,
+    Lockfile, Manifest, Store, build_environment, canonical_url, fetch_git, lock_staleness,
+    lockfile, manifest, resolve, unmet_imports,
 };
 use serde::Serialize;
 
@@ -1037,7 +1037,7 @@ impl CachedGitFetcher {
 }
 
 impl Fetcher for CachedGitFetcher {
-    fn fetch(&self, url: &str, reference: &str) -> io::Result<Fetched> {
+    fn fetch(&self, url: &str, reference: &GitRef) -> io::Result<Fetched> {
         if !self.refresh.contains(url)
             && let Some((rev, hash)) = self.locked.get(url)
             && holds_reference(reference, rev)
@@ -1060,14 +1060,19 @@ impl Fetcher for CachedGitFetcher {
 }
 
 /// Whether serving the locked commit `rev` satisfies a request for `reference`, i.e. the
-/// cache may hold this dep rather than re-fetch. A branch/tag name is intentionally held at
-/// its locked commit (scadman doesn't chase upstream movement unless the dep is named for
-/// `update`). But a request for a *different exact commit* — a changed `rev` pin, e.g. a
-/// transitive dep whose parent moved — must be honored, or the lock would record a commit
-/// its requester no longer asks for.
-fn holds_reference(reference: &str, rev: &str) -> bool {
-    let is_commit = reference.len() >= 7 && reference.chars().all(|c| c.is_ascii_hexdigit());
-    !is_commit || rev.starts_with(reference)
+/// cache may hold this dep rather than re-fetch. A branch or tag is held at its locked
+/// commit (scadman doesn't chase upstream movement unless the dep is named for `update`).
+/// A request for a *different exact commit* — a changed `rev` pin, e.g. a transitive dep
+/// whose parent moved — must be honored, or the lock would record a commit its requester
+/// no longer asks for.
+///
+/// The kind comes from the manifest key, never from the spelling: a tag named `20210101`
+/// looks like a commit hash and is not one.
+fn holds_reference(reference: &GitRef, rev: &str) -> bool {
+    match reference {
+        GitRef::Rev(requested) => rev.starts_with(requested.as_str()),
+        GitRef::Tag(_) | GitRef::Branch(_) => true,
+    }
 }
 
 fn read_or_lock(store: &Store) -> Result<Lockfile> {
@@ -1268,18 +1273,30 @@ mod tests {
     #[test]
     fn holds_reference_holds_branches_but_honors_changed_pins() {
         let rev = "061fef7abc0000000000000000000000000000ab";
+        let r = |s: &str| GitRef::Rev(s.to_string());
         // Branch/tag names are held at the locked commit.
-        assert!(holds_reference("main", rev));
-        assert!(holds_reference("v2.0.700", rev));
+        assert!(holds_reference(&GitRef::Branch("main".into()), rev));
+        assert!(holds_reference(&GitRef::Tag("v2.0.700".into()), rev));
         // The same exact pin (full or abbreviated) is held — no needless re-fetch.
-        assert!(holds_reference(rev, rev));
-        assert!(holds_reference("061fef7", rev));
+        assert!(holds_reference(&r(rev), rev));
+        assert!(holds_reference(&r("061fef7"), rev));
         // A different exact commit must NOT be held — it has to be re-fetched.
         assert!(!holds_reference(
-            "deadbeef1234567890000000000000000000cafe",
+            &r("deadbeef1234567890000000000000000000cafe"),
             rev
         ));
-        assert!(!holds_reference("deadbee", rev));
+        assert!(!holds_reference(&r("deadbee"), rev));
+    }
+
+    #[test]
+    fn holds_reference_goes_by_kind_not_spelling() {
+        // A tag or branch spelled like a commit hash is still a tag or branch: held.
+        let rev = "061fef7abc0000000000000000000000000000ab";
+        assert!(holds_reference(&GitRef::Tag("20210101".into()), rev));
+        assert!(holds_reference(&GitRef::Branch("deadbeef".into()), rev));
+        assert!(holds_reference(&GitRef::Tag("cafe2024".into()), rev));
+        // The same spellings as a `rev` are exact pins, and a different one is not held.
+        assert!(!holds_reference(&GitRef::Rev("20210101".into()), rev));
     }
 
     #[test]

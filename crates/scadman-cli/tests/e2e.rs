@@ -745,6 +745,57 @@ fn path_dep_does_not_force_refetch_of_git_deps() {
 }
 
 #[test]
+fn a_hex_named_tag_is_held_at_its_locked_commit_beside_a_path_dep() {
+    // A tag whose name is all hex digits (a date stamp like `20210101`) used to be taken
+    // for a commit hash. The locked commit never "started with" it, so every sync beside
+    // a path dep re-fetched it: the lock moved when the tag moved, and sync needed the
+    // network. It must behave like any other tag.
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (gitlib, _) = make_lib(root.path());
+    git(&gitlib, &["tag", "20210101"]);
+
+    let sib = root.path().join("sib");
+    fs::create_dir_all(&sib).unwrap();
+    fs::write(sib.join("s.scad"), "// s\n").unwrap();
+
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\nmygit = {{ git = \"file://{}\", tag = \"20210101\" }}\nmysib = {{ path = \"../sib\" }}\n",
+            gitlib.display()
+        ),
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    let locked = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+
+    // Move the tag upstream. A sync must not follow it; only `update` does.
+    fs::write(gitlib.join("more.scad"), "// more\n").unwrap();
+    commit_all(&gitlib, "more");
+    git(&gitlib, &["tag", "-f", "20210101"]);
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    assert!(
+        sync.status.success(),
+        "sync: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(proj.join("scadman.lock")).unwrap(),
+        locked,
+        "sync must not move a tag dependency off its locked commit"
+    );
+
+    // And with the remote gone entirely, sync still works from the store.
+    fs::remove_dir_all(&gitlib).unwrap();
+    let offline = scadman(&proj, store.path(), &["sync"]);
+    assert!(
+        offline.status.success(),
+        "sync must not need the remote for a locked tag: {}",
+        String::from_utf8_lossy(&offline.stderr)
+    );
+}
+
+#[test]
 fn changing_a_git_pin_still_nudges_even_with_a_path_dep() {
     // A path dep auto-refreshes, but it must NOT disable the staleness nudge for a git dep
     // beside it: editing the git pin in the manifest requires an explicit `scadman lock`.
