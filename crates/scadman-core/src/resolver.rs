@@ -191,6 +191,8 @@ pub enum ResolveError {
     TooDeep { name: String, depth: usize },
     /// A dependency name is not a safe path component (from the root or a transitive manifest).
     InvalidName { name: String, reason: String },
+    /// A dependency's library root is unsafe, or does not exist in the package's content.
+    InvalidRoot { name: String, reason: String },
 }
 
 impl fmt::Display for ResolveError {
@@ -211,6 +213,9 @@ impl fmt::Display for ResolveError {
             }
             ResolveError::InvalidName { name, reason } => {
                 write!(f, "invalid dependency name `{name}`: {reason}")
+            }
+            ResolveError::InvalidRoot { name, reason } => {
+                write!(f, "invalid library root for `{name}`: {reason}")
             }
         }
     }
@@ -401,6 +406,22 @@ impl Resolution<'_> {
             reason,
         })?;
 
+        // A declared library root is joined onto the package's content and exposed to
+        // OpenSCAD. Check it for every kind of dependency, from any manifest, before
+        // anything is fetched: the environment build rejects an unsafe one too, but only
+        // after it has been written into the lockfile.
+        let declared_root = match dep {
+            Dependency::Git(git) => git.root.as_deref(),
+            Dependency::Path(p) => p.root.as_deref(),
+            Dependency::Version(_) => None,
+        };
+        if let Some(root) = declared_root {
+            validate_library_root(root).map_err(|reason| ResolveError::InvalidRoot {
+                name: name.to_string(),
+                reason,
+            })?;
+        }
+
         // How to acquire this dependency's content, kept owned so the fetch happens after
         // the name-binding check (below) without borrowing `dep`.
         enum FetchInput {
@@ -433,12 +454,6 @@ impl Resolution<'_> {
                         "path dependency `{name}` is only supported in the root manifest (found via {})",
                         render_chain(via)
                     )));
-                }
-                if let Some(root) = &p.root {
-                    validate_library_root(root).map_err(|reason| ResolveError::InvalidName {
-                        name: name.to_string(),
-                        reason,
-                    })?;
                 }
                 let dir = self.resolve_path_dep(name, p)?;
                 let identity = format!("{PATH_SOURCE_PREFIX}{}", dir.display());
@@ -479,6 +494,15 @@ impl Resolution<'_> {
             source: identity.clone(),
             error,
         })?;
+
+        // The root must exist in what was fetched. A misspelled one would otherwise lock,
+        // and only fail when the environment is built.
+        if !fetched.path.join(&root).is_dir() {
+            return Err(ResolveError::InvalidRoot {
+                name: name.to_string(),
+                reason: format!("`{root}` does not exist in the package"),
+            });
+        }
 
         // Already resolved this identity — must agree on revision and on exposed name.
         if let Some(existing) = self.by_identity.get(&identity) {
@@ -1090,6 +1114,81 @@ mod tests {
         let err = resolve(&root, base.path(), &FakeFetcher::new()).unwrap_err();
         assert!(
             matches!(err, ResolveError::Conflict(Conflict::Alias { .. })),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_git_dependency_with_an_unsafe_root_is_rejected_before_any_fetch() {
+        // Only path dependencies had their root checked here; a git one locked cleanly
+        // and failed later, at sync. No package is registered with the fetcher, so
+        // reaching the fetch would surface as a Fetch error instead.
+        for bad in ["../..", "/etc", "src/../../x"] {
+            let root = manifest(&format!(
+                "[project]\nname = \"p\"\n[dependencies]\nA = {{ git = \"https://h/A\", rev = \"r1\", root = \"{bad}\" }}\n"
+            ));
+            let err = resolve(&root, Path::new("."), &FakeFetcher::new()).unwrap_err();
+            assert!(
+                matches!(&err, ResolveError::InvalidRoot { name, .. } if name == "A"),
+                "`{bad}`: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_root_that_does_not_exist_in_the_package_is_rejected() {
+        // A misspelled root used to lock, then fail at sync with "not in the store".
+        let fetcher = FakeFetcher::new().pkg("https://h/A", &[("r1", "sha_a")], None);
+        let root = manifest(
+            "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"r1\", root = \"srcc\" }\n",
+        );
+        let err = resolve(&root, Path::new("."), &fetcher).unwrap_err();
+        assert!(
+            matches!(&err, ResolveError::InvalidRoot { name, .. } if name == "A"),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("srcc"), "names the root: {err}");
+
+        // The same for a path dependency.
+        let base = TempDir::new().unwrap();
+        std::fs::create_dir_all(base.path().join("lib")).unwrap();
+        let root = manifest(
+            "[project]\nname = \"p\"\n\n[dependencies]\nlib = { path = \"lib\", root = \"srcc\" }\n",
+        );
+        let err = resolve(&root, base.path(), &FakeFetcher::new()).unwrap_err();
+        assert!(
+            matches!(&err, ResolveError::InvalidRoot { name, .. } if name == "lib"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn an_unsafe_path_dependency_root_is_reported_as_a_root_not_a_name() {
+        let base = TempDir::new().unwrap();
+        std::fs::create_dir_all(base.path().join("lib")).unwrap();
+        let root = manifest(
+            "[project]\nname = \"p\"\n\n[dependencies]\nlib = { path = \"lib\", root = \"../..\" }\n",
+        );
+        let err = resolve(&root, base.path(), &FakeFetcher::new()).unwrap_err();
+        assert!(matches!(err, ResolveError::InvalidRoot { .. }), "{err:?}");
+        assert!(
+            !err.to_string().contains("dependency name"),
+            "a bad root is not a bad name: {err}"
+        );
+    }
+
+    #[test]
+    fn a_transitive_git_dependency_with_an_unsafe_root_is_rejected() {
+        let a_manifest = "[project]\nname = \"A\"\n[dependencies]\nB = { git = \"https://h/B\", rev = \"r1\", root = \"../..\" }\n";
+        let fetcher = FakeFetcher::new()
+            .pkg("https://h/A", &[("ra", "sha_a")], Some(a_manifest))
+            .pkg("https://h/B", &[("r1", "sha_b")], None);
+        let root = manifest(
+            "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"ra\" }\n",
+        );
+        let err = resolve(&root, Path::new("."), &fetcher).unwrap_err();
+        assert!(
+            matches!(&err, ResolveError::InvalidRoot { name, .. } if name == "B"),
             "{err:?}"
         );
     }

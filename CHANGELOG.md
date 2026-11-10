@@ -58,6 +58,13 @@ All notable changes to scadman are recorded here. Format loosely follows
 - **A failed copy into the store cleans up after itself.** When an insert failed
   partway (a full disk, for one), its `.staging-*` directory stayed in the store for
   good: the name is unique to the run, so nothing later reused or removed it.
+- **A git dependency's `root` is checked at lock time.** An absolute or `..` root on a
+  git dependency locked cleanly, was written into `scadman.lock`, and failed only at
+  `sync`; only path dependencies and `add --root` were checked earlier. A root that
+  did not exist in the library (a typo) also locked, and `sync` then said the package
+  was "not in the store — run a sync". `lock` now refuses both, for any dependency
+  from any manifest, and says which root is wrong. A bad root is also no longer
+  reported as an invalid dependency name.
 - **`scadman add <url>` now says the URL is in the name position.** Passing only a
   git URL used to fail with the package-name character error, which read as if the
   URL were malformed. It now prints `` `<url>` looks like a git URL, not a package
