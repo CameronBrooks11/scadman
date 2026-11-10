@@ -391,7 +391,7 @@ fn doctor_cmd() -> Result<()> {
             );
             None
         }
-        Ok(text) => match Manifest::from_toml(&text) {
+        Ok(text) => match Manifest::from_root_toml(&text) {
             Ok(m) => {
                 let n = m.dependencies.len();
                 println!(
@@ -973,7 +973,7 @@ fn warn_openscad_too_old() {
 fn load_manifest() -> Result<Manifest> {
     let text = fs::read_to_string(manifest::MANIFEST_FILE)
         .with_context(|| format!("read {} (run `scadman init`?)", manifest::MANIFEST_FILE))?;
-    Manifest::from_toml(&text).with_context(|| format!("parse {}", manifest::MANIFEST_FILE))
+    Manifest::from_root_toml(&text).with_context(|| format!("parse {}", manifest::MANIFEST_FILE))
 }
 
 fn open_store() -> Result<Store> {

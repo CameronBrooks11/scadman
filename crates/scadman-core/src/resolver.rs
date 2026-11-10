@@ -769,6 +769,20 @@ mod tests {
     }
 
     #[test]
+    fn unknown_keys_in_a_transitive_manifest_are_ignored() {
+        // A dependency's manifest may use keys from a newer scadman; it still resolves.
+        let a_manifest = "future = 1\n[project]\nname = \"A\"\nlicense = \"MIT\"\n[dependencies]\nB = { git = \"https://h/B\", rev = \"r1\" }\n";
+        let fetcher = FakeFetcher::new()
+            .pkg("https://h/A", &[("ra", "sha_a")], Some(a_manifest))
+            .pkg("https://h/B", &[("r1", "sha_b")], None);
+        let root = manifest(
+            "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"ra\" }\n",
+        );
+        let set = resolve(&root, Path::new("."), &fetcher).unwrap();
+        assert_eq!(set.packages.len(), 2);
+    }
+
+    #[test]
     fn name_collision_is_reported() {
         // A and C both introduce a dep named `B` from different URLs.
         let a_dep = "[project]\nname = \"A\"\n[dependencies]\nB = { git = \"https://h/B1\", rev = \"r1\" }\n";

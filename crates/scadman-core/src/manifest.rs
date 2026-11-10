@@ -32,6 +32,24 @@ pub struct Project {
     pub openscad: Option<String>,
 }
 
+/// The shape [`Manifest::from_root_toml`] accepts: [`Manifest`] with unknown keys refused.
+/// Kept beside it so the two change together; a test pins that they agree.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictManifest {
+    project: StrictProject,
+    #[serde(default)]
+    dependencies: BTreeMap<String, Dependency>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictProject {
+    name: String,
+    #[serde(default)]
+    openscad: Option<String>,
+}
+
 /// A single dependency, accepting either a bare version string or a detailed table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -168,9 +186,28 @@ impl Manifest {
         }
     }
 
-    /// Parse a manifest from TOML text.
+    /// Parse a manifest from TOML text, ignoring tables and keys it does not know.
+    ///
+    /// This is the reader for a dependency's own `scadman.toml`: a library may carry keys
+    /// from a newer scadman, and an older one must still be able to read it. For the
+    /// project's own manifest use [`Manifest::from_root_toml`].
     pub fn from_toml(text: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(text)
+    }
+
+    /// Parse the project's own manifest, rejecting any table or key it does not know.
+    ///
+    /// A misspelled `[dependencies]` header would otherwise read as a project with no
+    /// dependencies, and every command would report success.
+    pub fn from_root_toml(text: &str) -> Result<Self, toml::de::Error> {
+        let strict: StrictManifest = toml::from_str(text)?;
+        Ok(Self {
+            project: Project {
+                name: strict.project.name,
+                openscad: strict.project.openscad,
+            },
+            dependencies: strict.dependencies,
+        })
     }
 
     /// Serialize this manifest to TOML text.
@@ -305,6 +342,61 @@ local-lib = { path = "../local-lib" }
         for bad in ["", ".", "..", "../evil", "a/b", "a\\b", "x\0y"] {
             assert!(validate_package_name(bad).is_err(), "should reject `{bad}`");
         }
+    }
+
+    #[test]
+    fn root_manifest_rejects_a_misspelled_table() {
+        // `[dependancies]` used to parse as "no dependencies": every command succeeded
+        // and the project silently had none.
+        let text = "[project]\nname = \"p\"\n\n[dependancies]\nBOSL2 = { git = \"https://x/BOSL2\", tag = \"v1\" }\n";
+        let err = Manifest::from_root_toml(text).unwrap_err().to_string();
+        assert!(err.contains("dependancies"), "should name the table: {err}");
+    }
+
+    #[test]
+    fn root_manifest_rejects_an_unknown_project_key() {
+        let text = "[project]\nname = \"p\"\nopenscadd = \">=2021.01\"\n";
+        let err = Manifest::from_root_toml(text).unwrap_err().to_string();
+        assert!(err.contains("openscadd"), "should name the key: {err}");
+    }
+
+    #[test]
+    fn root_manifest_accepts_everything_a_manifest_serializes_to() {
+        // Guards the strict parser against drifting from `Manifest`: a field added to
+        // one and not the other would make scadman reject its own output.
+        let mut m = Manifest::new("widget");
+        m.project.openscad = Some(">=2021.01".to_string());
+        m.dependencies.insert(
+            "A".to_string(),
+            Dependency::Git(GitDependency {
+                git: "https://h/A".to_string(),
+                rev: None,
+                tag: Some("v1".to_string()),
+                branch: None,
+                root: Some("src".to_string()),
+                on_path: true,
+            }),
+        );
+        m.dependencies.insert(
+            "B".to_string(),
+            Dependency::Path(PathDependency {
+                path: "../b".to_string(),
+                root: None,
+                on_path: false,
+            }),
+        );
+        let text = m.to_toml().unwrap();
+        assert_eq!(Manifest::from_root_toml(&text).unwrap(), m);
+    }
+
+    #[test]
+    fn dependency_manifest_tolerates_unknown_keys() {
+        // A library's own manifest may carry keys from a newer scadman; `from_toml` (used
+        // for fetched manifests) must keep reading it.
+        let text =
+            "future = 1\n\n[project]\nname = \"lib\"\nlicense = \"MIT\"\n\n[future-table]\nx = 1\n";
+        let m = Manifest::from_toml(text).expect("tolerant parse");
+        assert_eq!(m.project.name, "lib");
     }
 
     #[test]

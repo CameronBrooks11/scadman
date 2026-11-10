@@ -440,6 +440,42 @@ fn doctor_distinguishes_a_broken_manifest_from_a_missing_one() {
 }
 
 #[test]
+fn a_misspelled_dependencies_table_is_an_error_not_an_empty_project() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = project_with(
+        root.path(),
+        "[project]\nname = \"d\"\n\n[dependancies]\nmylib = { git = \"file:///x\", tag = \"v1\" }\n",
+    );
+
+    for cmd in ["list", "lock", "sync"] {
+        let out = scadman(&proj, store.path(), &[cmd]);
+        assert!(!out.status.success(), "`{cmd}` should fail");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("dependancies"),
+            "`{cmd}` should name the table: {err}"
+        );
+    }
+    assert!(
+        !proj.join("scadman.lock").exists(),
+        "no lockfile may be written for a manifest that does not parse"
+    );
+
+    let out = scadman(&proj, store.path(), &["doctor"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        manifest_line(&text).contains("failed to parse"),
+        "doctor should report the parse failure:\n{text}"
+    );
+    // The TOML error spans several lines; the table is named below the `manifest:` line.
+    assert!(
+        text.contains("dependancies"),
+        "doctor should name the table:\n{text}"
+    );
+}
+
+#[test]
 fn doctor_reports_setup() {
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();
