@@ -440,6 +440,33 @@ fn doctor_distinguishes_a_broken_manifest_from_a_missing_one() {
 }
 
 #[test]
+fn lock_rejects_a_git_dependency_with_two_refs() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, rev) = make_lib(root.path());
+    git(&lib, &["tag", "v1"]);
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\", tag = \"v1\" }}\n",
+            lib.display()
+        ),
+    );
+
+    let out = scadman(&proj, store.path(), &["lock"]);
+    assert!(
+        !out.status.success(),
+        "lock should refuse an entry with both rev and tag"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("mylib") && err.contains("rev") && err.contains("tag"),
+        "should name the dependency and the keys: {err}"
+    );
+    assert!(!proj.join("scadman.lock").exists(), "no lockfile written");
+}
+
+#[test]
 fn a_misspelled_dependencies_table_is_an_error_not_an_empty_project() {
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();

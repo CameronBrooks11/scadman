@@ -43,6 +43,9 @@ A git dependency:
 | `root` | no | Subdirectory to expose instead of the repository root. See [library-roots.md](library-roots.md). |
 | `on_path` | no | Also put the exposed directory on `OPENSCADPATH`. See [library-roots.md](library-roots.md). |
 
+Give exactly one of `rev`, `tag` and `branch`; an entry with none, or with more than
+one, is refused at lock time.
+
 A path dependency takes `path` (a directory, relative to the project or absolute) and
 the same optional `root` and `on_path`. See [path-dependencies.md](path-dependencies.md).
 

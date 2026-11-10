@@ -495,16 +495,32 @@ impl Resolution<'_> {
     }
 }
 
+/// The one reference a git dependency names. Exactly one of `rev`, `tag` and `branch`
+/// must be set: an entry with two says two different things, and picking one silently
+/// locks code the author may not have meant.
 fn git_reference<'a>(name: &str, git: &'a GitDependency) -> Result<&'a str, ResolveError> {
-    git.rev
-        .as_deref()
-        .or(git.tag.as_deref())
-        .or(git.branch.as_deref())
-        .ok_or_else(|| {
-            ResolveError::Unsupported(format!(
-                "git dependency `{name}` needs a rev, tag, or branch"
-            ))
-        })
+    let given: Vec<(&str, &str)> = [
+        ("rev", git.rev.as_deref()),
+        ("tag", git.tag.as_deref()),
+        ("branch", git.branch.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .collect();
+
+    match given.as_slice() {
+        [(_, reference)] => Ok(reference),
+        [] => Err(ResolveError::Unsupported(format!(
+            "git dependency `{name}` needs a rev, tag, or branch"
+        ))),
+        several => {
+            let keys: Vec<&str> = several.iter().map(|(key, _)| *key).collect();
+            Err(ResolveError::Unsupported(format!(
+                "git dependency `{name}` sets {} — give exactly one of rev, tag, or branch",
+                keys.join(" and ")
+            )))
+        }
+    }
 }
 
 fn read_manifest_deps(
@@ -766,6 +782,46 @@ mod tests {
         );
         let err = resolve(&root, Path::new("."), &fetcher).unwrap_err();
         assert!(matches!(err, ResolveError::Manifest { .. }));
+    }
+
+    #[test]
+    fn a_git_dependency_with_more_than_one_ref_is_rejected() {
+        // `rev` used to win silently over `tag`, and `tag` over `branch`, so an entry
+        // saying two things locked whichever came first in that order.
+        let fetcher = FakeFetcher::new().pkg(
+            "https://h/A",
+            &[("r1", "sha_1"), ("v2", "sha_2"), ("main", "sha_3")],
+            None,
+        );
+        for (refs, named) in [
+            ("rev = \"r1\", tag = \"v2\"", ["rev", "tag"]),
+            ("rev = \"r1\", branch = \"main\"", ["rev", "branch"]),
+            ("tag = \"v2\", branch = \"main\"", ["tag", "branch"]),
+        ] {
+            let root = manifest(&format!(
+                "[project]\nname = \"p\"\n[dependencies]\nA = {{ git = \"https://h/A\", {refs} }}\n"
+            ));
+            let err = resolve(&root, Path::new("."), &fetcher).unwrap_err();
+            let msg = err.to_string();
+            assert!(matches!(err, ResolveError::Unsupported(_)), "{refs}: {msg}");
+            assert!(msg.contains("`A`"), "names the dependency: {msg}");
+            for key in named {
+                assert!(msg.contains(key), "names `{key}`: {msg}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_transitive_git_dependency_with_more_than_one_ref_is_rejected() {
+        let a_manifest = "[project]\nname = \"A\"\n[dependencies]\nB = { git = \"https://h/B\", rev = \"r1\", tag = \"v2\" }\n";
+        let fetcher = FakeFetcher::new()
+            .pkg("https://h/A", &[("ra", "sha_a")], Some(a_manifest))
+            .pkg("https://h/B", &[("r1", "sha_b1"), ("v2", "sha_b2")], None);
+        let root = manifest(
+            "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"ra\" }\n",
+        );
+        let err = resolve(&root, Path::new("."), &fetcher).unwrap_err();
+        assert!(matches!(err, ResolveError::Unsupported(_)), "{err}");
     }
 
     #[test]
