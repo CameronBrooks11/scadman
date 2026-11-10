@@ -64,11 +64,18 @@ pub fn build(lock: &Lockfile, store: &Store, env_root: &Path) -> io::Result<Envi
     let mut exposed = Vec::with_capacity(lock.packages.len());
     let mut on_path = Vec::new();
     for package in &lock.packages {
-        let target = store.path_for(&package.hash).join(&package.root);
+        let entry = store.path_for(&package.hash);
+        if !entry.exists() {
+            return Err(io::Error::other(format!(
+                "package `{}` ({}) is not in the store — acquire it first",
+                package.name, package.hash
+            )));
+        }
+        let target = entry.join(&package.root);
         if !target.exists() {
             return Err(io::Error::other(format!(
-                "package `{}` root `{}` ({}) is not in the store — run a sync/acquire first",
-                package.name, package.root, package.hash
+                "package `{}`: library root `{}` does not exist in its content",
+                package.name, package.root
             )));
         }
         let link = env_root.join(&package.name);
@@ -172,6 +179,37 @@ mod tests {
         lock.packages.push(locked("Ghost", H_C));
         let env_dir = TempDir::new().unwrap();
         assert!(build(&lock, &store, &env_dir.path().join("env")).is_err());
+    }
+
+    #[test]
+    fn a_missing_root_is_told_apart_from_missing_content() {
+        let (_root, store) = store_with(&[(H_A, "// a")]);
+        let env_dir = TempDir::new().unwrap();
+
+        // The package is in the store; the root inside it is not.
+        let mut lock = Lockfile::new();
+        let mut pkg = locked("A", H_A);
+        pkg.root = "srcc".to_string();
+        lock.packages.push(pkg);
+        let err = build(&lock, &store, &env_dir.path().join("env"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("srcc") && err.contains("does not exist"),
+            "should say the root is missing from the package: {err}"
+        );
+        assert!(
+            !err.contains("not in the store"),
+            "the content is in the store; only the root is wrong: {err}"
+        );
+
+        // The package itself is absent.
+        let mut lock = Lockfile::new();
+        lock.packages.push(locked("B", H_B));
+        let err = build(&lock, &store, &env_dir.path().join("env"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not in the store"), "{err}");
     }
 
     #[test]

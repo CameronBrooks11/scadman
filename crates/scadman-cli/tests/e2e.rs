@@ -186,6 +186,44 @@ fn a_lockfile_hash_that_is_a_path_is_refused() {
 }
 
 #[test]
+fn lock_rejects_a_bad_library_root_on_a_git_dependency() {
+    // An unsafe or misspelled root on a git dependency used to lock cleanly, write itself
+    // into scadman.lock, and fail only at sync — the misspelled case with "not in the
+    // store — run a sync".
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, rev) = make_lib(root.path());
+    let proj = root.path().join("proj");
+    fs::create_dir_all(&proj).unwrap();
+
+    for (bad, expect) in [("../..", ".."), ("/etc", "relative"), ("srcc", "srcc")] {
+        fs::write(
+            proj.join("scadman.toml"),
+            format!(
+                "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\", root = \"{bad}\" }}\n",
+                lib.display()
+            ),
+        )
+        .unwrap();
+        let out = scadman(&proj, store.path(), &["lock"]);
+        assert!(!out.status.success(), "lock should refuse root `{bad}`");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("library root") && err.contains("mylib") && err.contains(expect),
+            "root `{bad}`: should name the dependency and what is wrong: {err}"
+        );
+        assert!(
+            !err.contains("dependency name") && !err.contains("not in the store"),
+            "root `{bad}`: misleading message: {err}"
+        );
+        assert!(
+            !proj.join("scadman.lock").exists(),
+            "root `{bad}`: no lockfile may be written"
+        );
+    }
+}
+
+#[test]
 fn sync_rejects_a_stale_lockfile() {
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();

@@ -21,7 +21,8 @@ dotSCAD = { git = "…", rev = "…", root = "src", on_path = true }
 
 - **`root`** (subdir, default `"."`) — expose `env/<name>` → `store/<hash>/<root>` instead
   of the repo root. Clean and collision-safe; handles libraries whose code is under a
-  subdir. Validated as a safe relative path (no `..`/absolute) at the env chokepoint.
+  subdir. Checked at lock time: it must be a relative path with no `..`, and the
+  directory must exist in the library.
 - **`on_path`** (bool, default `false`) — also add `env/<name>` to `OPENSCADPATH`, so the
   library's own root-relative imports resolve at any depth. `OPENSCADPATH` becomes
   `env : env/<name> : …` (env first, so `<name/…>` and named libraries resolve; the
