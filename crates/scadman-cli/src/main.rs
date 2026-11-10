@@ -1211,6 +1211,7 @@ fn warn_unmet_imports(lock: &Lockfile, env: &Environment) {
         .map(|p| Installed {
             name: p.name.clone(),
             path: env.root.join(&p.name),
+            on_path: p.on_path,
         })
         .collect();
     for unmet in unmet_imports(Path::new("."), &installed) {

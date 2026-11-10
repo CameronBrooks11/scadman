@@ -1234,6 +1234,58 @@ fn path_dependency_with_root_and_on_path_exposes_the_subdir() {
 }
 
 #[test]
+fn sync_does_not_warn_about_an_import_an_on_path_library_provides() {
+    // Library A imports `<util/x.scad>`, which resolves through on_path library `dot`.
+    // sync used to warn that A imports `util/`, a library that does not exist.
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let dot = root.path().join("dot");
+    fs::create_dir_all(dot.join("util")).unwrap();
+    fs::write(
+        dot.join("util").join("x.scad"),
+        "module ux() { cube(2); }\n",
+    )
+    .unwrap();
+    let a = root.path().join("A");
+    fs::create_dir_all(&a).unwrap();
+    fs::write(
+        a.join("a.scad"),
+        "use <util/x.scad>\nmodule a() { ux(); }\n",
+    )
+    .unwrap();
+
+    let manifest = |on_path: &str| {
+        format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\nA = {{ path = \"../A\" }}\ndot = {{ path = \"../dot\"{on_path} }}\n"
+        )
+    };
+    let proj = project_with(root.path(), &manifest(", on_path = true"));
+    fs::write(proj.join("main.scad"), "use <A/a.scad>\na();\n").unwrap();
+
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    assert!(
+        sync.status.success(),
+        "sync: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    let warnings = String::from_utf8_lossy(&sync.stderr);
+    assert!(
+        !warnings.contains("warning"),
+        "no warning expected with `dot` on_path: {warnings}"
+    );
+
+    // Control: without on_path the import is unresolvable, and the warning is right.
+    fs::write(proj.join("scadman.toml"), manifest("")).unwrap();
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    let warnings = String::from_utf8_lossy(&sync.stderr);
+    assert!(
+        warnings.contains("`A` imports `util/`"),
+        "expected the warning without on_path: {warnings}"
+    );
+}
+
+#[test]
 fn add_path_rejects_a_conflicting_ref_flag() {
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();
