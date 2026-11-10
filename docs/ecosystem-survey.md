@@ -11,8 +11,8 @@ Two surveys tested that claim: **pass 1**, the 28 repositories on
 [openscad.org/libraries.html](https://openscad.org/libraries.html) plus five archetype
 fixtures; and **pass 2**, a wider sample of 200 repositories discovered by GitHub search
 (`topic:openscad` ∪ `language:OpenSCAD`, forks/archived excluded), 168 of them
-content-analyzed. Method and raw data live in the private `CameronBrooks11/scadman-survey`
-repo (metadata via the GitHub API; structure via shallow clones + a `.scad`
+content-analyzed. Method and raw data live in a separate private repository
+(metadata via the GitHub API; structure via shallow clones + a `.scad`
 include-graph / symbol scan). Findings are quoted pass 1 → pass 2 so the trend is
 visible; unless noted, the wider sample confirms.
 
