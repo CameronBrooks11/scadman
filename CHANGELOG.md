@@ -32,6 +32,12 @@ All notable changes to scadman are recorded here. Format loosely follows
   adding `tag = "v2"` beside an old `rev` line locked the old commit without a word.
   `add` already rejected the combination; a hand-edited manifest, and a dependency's
   own, are now held to the same rule.
+- **A tag or branch whose name looks like a commit hash is held at its locked commit.**
+  In a project with a path dependency, a tag such as `20210101` (seven or more hex
+  digits) was taken for a commit, so every `sync` re-fetched it: the lock moved on its
+  own when the tag moved upstream, and `sync` failed without the network. Whether a
+  reference is a commit now comes from the manifest key it was declared under, not
+  from its spelling.
 - **`scadman add <url>` now says the URL is in the name position.** Passing only a
   git URL used to fail with the package-name character error, which read as if the
   URL were malformed. It now prints `` `<url>` looks like a git URL, not a package

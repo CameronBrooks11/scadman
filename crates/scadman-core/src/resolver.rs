@@ -34,11 +34,34 @@ pub struct Fetched {
     pub path: std::path::PathBuf,
 }
 
+/// The reference a git dependency names, with the manifest key it was declared under.
+///
+/// The kind travels with the name because the name alone cannot tell them apart: a tag
+/// called `20210101` or a branch called `deadbeef` is spelled like a commit hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitRef {
+    /// `rev` — an exact commit. Never moves.
+    Rev(String),
+    /// `tag` — locked to the commit it points at.
+    Tag(String),
+    /// `branch` — locked to its tip at lock time.
+    Branch(String),
+}
+
+impl GitRef {
+    /// The reference as git spells it.
+    pub fn as_str(&self) -> &str {
+        match self {
+            GitRef::Rev(s) | GitRef::Tag(s) | GitRef::Branch(s) => s,
+        }
+    }
+}
+
 /// Acquires dependency content into the store. Abstracted so the resolver is testable
 /// without a network or real git.
 pub trait Fetcher {
     /// Acquire a git source at a reference.
-    fn fetch(&self, url: &str, reference: &str) -> io::Result<Fetched>;
+    fn fetch(&self, url: &str, reference: &GitRef) -> io::Result<Fetched>;
     /// Acquire a local directory (a path dependency). The `rev` of the result is the
     /// content hash — a path dependency has no revision, only whatever it contains now.
     fn fetch_path(&self, dir: &Path) -> io::Result<Fetched>;
@@ -56,8 +79,8 @@ impl GitFetcher {
 }
 
 impl Fetcher for GitFetcher {
-    fn fetch(&self, url: &str, reference: &str) -> io::Result<Fetched> {
-        let acquired = fetch_git(&self.store, url, reference)?;
+    fn fetch(&self, url: &str, reference: &GitRef) -> io::Result<Fetched> {
+        let acquired = fetch_git(&self.store, url, reference.as_str())?;
         Ok(Fetched {
             rev: acquired.rev,
             hash: acquired.entry.hash,
@@ -357,7 +380,7 @@ impl Resolution<'_> {
         // How to acquire this dependency's content, kept owned so the fetch happens after
         // the name-binding check (below) without borrowing `dep`.
         enum FetchInput {
-            Git { url: String, reference: String },
+            Git { url: String, reference: GitRef },
             Path { dir: PathBuf },
         }
 
@@ -368,7 +391,7 @@ impl Resolution<'_> {
                 let identity = canonical_url(&git.git);
                 let input = FetchInput::Git {
                     url: identity.clone(),
-                    reference: git_reference(name, git)?.to_string(),
+                    reference: git_reference(name, git)?,
                 };
                 (
                     identity,
@@ -498,18 +521,18 @@ impl Resolution<'_> {
 /// The one reference a git dependency names. Exactly one of `rev`, `tag` and `branch`
 /// must be set: an entry with two says two different things, and picking one silently
 /// locks code the author may not have meant.
-fn git_reference<'a>(name: &str, git: &'a GitDependency) -> Result<&'a str, ResolveError> {
-    let given: Vec<(&str, &str)> = [
-        ("rev", git.rev.as_deref()),
-        ("tag", git.tag.as_deref()),
-        ("branch", git.branch.as_deref()),
+fn git_reference(name: &str, git: &GitDependency) -> Result<GitRef, ResolveError> {
+    let given: Vec<(&str, GitRef)> = [
+        ("rev", git.rev.clone().map(GitRef::Rev)),
+        ("tag", git.tag.clone().map(GitRef::Tag)),
+        ("branch", git.branch.clone().map(GitRef::Branch)),
     ]
     .into_iter()
     .filter_map(|(key, value)| value.map(|v| (key, v)))
     .collect();
 
     match given.as_slice() {
-        [(_, reference)] => Ok(reference),
+        [(_, reference)] => Ok(reference.clone()),
         [] => Err(ResolveError::Unsupported(format!(
             "git dependency `{name}` needs a rev, tag, or branch"
         ))),
@@ -601,7 +624,8 @@ mod tests {
     }
 
     impl Fetcher for FakeFetcher {
-        fn fetch(&self, url: &str, reference: &str) -> io::Result<Fetched> {
+        fn fetch(&self, url: &str, reference: &GitRef) -> io::Result<Fetched> {
+            let reference = reference.as_str();
             let pkg = self
                 .pkgs
                 .get(url)
