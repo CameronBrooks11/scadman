@@ -23,4 +23,4 @@ pub use resolver::{
     canonical_url, lock_staleness, resolve,
 };
 pub use source::{Acquired, fetch_git};
-pub use store::{Store, StoreEntry, content_hash};
+pub use store::{Store, StoreEntry, content_hash, validate_content_hash};

@@ -31,6 +31,25 @@ pub struct StoreEntry {
     pub path: PathBuf,
 }
 
+/// Check that `hash` has the shape [`content_hash`] produces: 64 lowercase hex digits.
+///
+/// A hash becomes a path segment under the store root ([`Store::path_for`]). One read
+/// from a lockfile is untrusted, and a value like `/etc` or `../..` would name a
+/// directory outside the store, so anything else is refused before it is joined.
+pub fn validate_content_hash(hash: &str) -> Result<(), String> {
+    let well_formed = hash.len() == 64
+        && hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if well_formed {
+        Ok(())
+    } else {
+        Err(format!(
+            "hash `{hash}` is not a content hash (64 lowercase hex digits)"
+        ))
+    }
+}
+
 impl Store {
     /// A store rooted at `root` (created lazily on first insert).
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -212,6 +231,29 @@ mod tests {
             content_hash(a.path()).unwrap(),
             content_hash(c.path()).unwrap()
         );
+    }
+
+    #[test]
+    fn content_hash_shape_is_validated() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "std.scad", "x=1;");
+        // What content_hash produces is accepted.
+        assert!(validate_content_hash(&content_hash(d.path()).unwrap()).is_ok());
+        let good = "0123456789abcdef".repeat(4);
+        assert!(validate_content_hash(&good).is_ok());
+        for bad in [
+            "",
+            ".",
+            "..",
+            "/etc",
+            "../../victim",
+            "deadbeef",
+            &good.to_uppercase(),
+            &format!("{good}0"),
+            &format!("{}/", &good[..63]),
+        ] {
+            assert!(validate_content_hash(bad).is_err(), "should reject `{bad}`");
+        }
     }
 
     #[test]

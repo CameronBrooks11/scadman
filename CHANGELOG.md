@@ -50,6 +50,11 @@ All notable changes to scadman are recorded here. Format loosely follows
   `run` and `env` now stop with the same "out of date … run `scadman lock`" error an
   added-but-unlocked dependency gets, and `doctor` reports it. Libraries that are in
   the lockfile because another one depends on them are unaffected.
+- **A lockfile `hash` that is not a content hash is refused.** The hash is joined onto
+  the store root, so `hash = "/some/dir"` or `hash = "../../dir"` made `sync` link the
+  package to that directory and put it on `OPENSCADPATH`. A hash must now be 64
+  lowercase hex digits, checked wherever the lockfile is read and again where the
+  environment is built, before the existing environment is touched.
 - **`scadman add <url>` now says the URL is in the name position.** Passing only a
   git URL used to fail with the package-name character error, which read as if the
   URL were malformed. It now prints `` `<url>` looks like a git URL, not a package

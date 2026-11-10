@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use crate::lockfile::Lockfile;
 use crate::manifest::{validate_library_root, validate_package_name};
-use crate::store::Store;
+use crate::store::{Store, validate_content_hash};
 
 /// A materialized project environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +45,17 @@ impl Environment {
 /// content in `store`. Returns an error if a locked package is missing from the store
 /// (acquire it first) — the environment must reflect the lockfile exactly.
 pub fn build(lock: &Lockfile, store: &Store, env_root: &Path) -> io::Result<Environment> {
+    // The lockfile is untrusted input (it travels with a cloned repo). This is the single
+    // chokepoint every package name, root and hash funnels through to the filesystem, so
+    // validate here regardless of whether the resolver already did — and validate all of
+    // it before touching the existing environment, so a bad entry changes nothing.
+    for package in &lock.packages {
+        validate_package_name(&package.name).map_err(io::Error::other)?;
+        validate_library_root(&package.root).map_err(io::Error::other)?;
+        validate_content_hash(&package.hash)
+            .map_err(|reason| io::Error::other(format!("package `{}`: {reason}", package.name)))?;
+    }
+
     if env_root.exists() {
         fs::remove_dir_all(env_root)?;
     }
@@ -53,12 +64,6 @@ pub fn build(lock: &Lockfile, store: &Store, env_root: &Path) -> io::Result<Envi
     let mut exposed = Vec::with_capacity(lock.packages.len());
     let mut on_path = Vec::new();
     for package in &lock.packages {
-        // The lockfile is untrusted input (it travels with a cloned repo). This is the
-        // single chokepoint every package name / root funnels through to the filesystem,
-        // so validate here regardless of whether the resolver already did.
-        validate_package_name(&package.name).map_err(io::Error::other)?;
-        validate_library_root(&package.root).map_err(io::Error::other)?;
-
         let target = store.path_for(&package.hash).join(&package.root);
         if !target.exists() {
             return Err(io::Error::other(format!(
@@ -92,6 +97,11 @@ mod tests {
     use crate::lockfile::LockedPackage;
     use tempfile::TempDir;
 
+    // Well-formed content hashes (64 lowercase hex digits) for fixtures.
+    const H_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const H_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const H_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
     fn store_with(entries: &[(&str, &str)]) -> (TempDir, Store) {
         let root = TempDir::new().unwrap();
         let store = Store::new(root.path());
@@ -117,10 +127,10 @@ mod tests {
 
     #[test]
     fn exposes_each_package_under_its_name() {
-        let (_root, store) = store_with(&[("h_bosl2", "// bosl2"), ("h_utils", "// utils")]);
+        let (_root, store) = store_with(&[(H_A, "// bosl2"), (H_B, "// utils")]);
         let mut lock = Lockfile::new();
-        lock.packages.push(locked("BOSL2", "h_bosl2"));
-        lock.packages.push(locked("scad-utils", "h_utils"));
+        lock.packages.push(locked("BOSL2", H_A));
+        lock.packages.push(locked("scad-utils", H_B));
 
         let env_dir = TempDir::new().unwrap();
         let env = build(&lock, &store, &env_dir.path().join("env")).unwrap();
@@ -136,18 +146,18 @@ mod tests {
 
     #[test]
     fn rebuild_is_clean() {
-        let (_root, store) = store_with(&[("h_a", "// a"), ("h_b", "// b")]);
+        let (_root, store) = store_with(&[(H_A, "// a"), (H_B, "// b")]);
         let env_dir = TempDir::new().unwrap();
         let env_root = env_dir.path().join("env");
 
         let mut first = Lockfile::new();
-        first.packages.push(locked("A", "h_a"));
-        first.packages.push(locked("B", "h_b"));
+        first.packages.push(locked("A", H_A));
+        first.packages.push(locked("B", H_B));
         build(&first, &store, &env_root).unwrap();
 
         // A later lockfile with only A must not leave B behind.
         let mut second = Lockfile::new();
-        second.packages.push(locked("A", "h_a"));
+        second.packages.push(locked("A", H_A));
         let env = build(&second, &store, &env_root).unwrap();
 
         assert_eq!(env.exposed, vec!["A".to_string()]);
@@ -159,7 +169,7 @@ mod tests {
     fn missing_store_entry_is_an_error() {
         let (_root, store) = store_with(&[]);
         let mut lock = Lockfile::new();
-        lock.packages.push(locked("Ghost", "nonexistent"));
+        lock.packages.push(locked("Ghost", H_C));
         let env_dir = TempDir::new().unwrap();
         assert!(build(&lock, &store, &env_dir.path().join("env")).is_err());
     }
@@ -168,7 +178,7 @@ mod tests {
     fn exposes_a_subdir_root_and_adds_it_to_openscad_path() {
         let store_dir = TempDir::new().unwrap();
         let store = Store::new(store_dir.path());
-        let entry = store.path_for("h1");
+        let entry = store.path_for(H_A);
         fs::create_dir_all(entry.join("src")).unwrap();
         fs::write(entry.join("src").join("lib.scad"), "// lib").unwrap();
 
@@ -177,7 +187,7 @@ mod tests {
             name: "dotSCAD".to_string(),
             source: "s".to_string(),
             rev: "r".to_string(),
-            hash: "h1".to_string(),
+            hash: H_A.to_string(),
             dependencies: Vec::new(),
             root: "src".to_string(),
             on_path: true,
@@ -199,9 +209,9 @@ mod tests {
 
     #[test]
     fn rejects_traversing_library_root() {
-        let (_root, store) = store_with(&[("h", "// x")]);
+        let (_root, store) = store_with(&[(H_A, "// x")]);
         let mut lock = Lockfile::new();
-        let mut pkg = locked("x", "h");
+        let mut pkg = locked("x", H_A);
         pkg.root = "../etc".to_string();
         lock.packages.push(pkg);
         let env_dir = TempDir::new().unwrap();
@@ -209,11 +219,59 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_lockfile_hash_that_is_not_a_content_hash() {
+        // The hash is joined onto the store root. An absolute path replaces the root
+        // outright and `..` climbs out of it, so either would link the package to a
+        // directory of the lockfile author's choosing.
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("private.txt"), "host-only").unwrap();
+        let (_store_root, store) = store_with(&[]);
+        let absolute = outside.path().to_string_lossy().into_owned();
+        let climbing = format!("../../..{absolute}");
+        for bad in [absolute.as_str(), climbing.as_str(), "", ".", "deadbeef"] {
+            let mut lock = Lockfile::new();
+            lock.packages.push(locked("mylib", bad));
+            let env_dir = TempDir::new().unwrap();
+            let env_root = env_dir.path().join("env");
+            let err = build(&lock, &store, &env_root).unwrap_err().to_string();
+            assert!(
+                err.contains("hash"),
+                "`{bad}` should be refused as a hash: {err}"
+            );
+            assert!(
+                !env_root.join("mylib").exists(),
+                "`{bad}`: nothing may be linked"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bad_entry_is_refused_before_the_environment_is_touched() {
+        // Validation runs over the whole lockfile first: a bad second package must not
+        // leave the old environment deleted and a new one half built.
+        let (_root, store) = store_with(&[(H_A, "// a")]);
+        let env_dir = TempDir::new().unwrap();
+        let env_root = env_dir.path().join("env");
+        let mut good = Lockfile::new();
+        good.packages.push(locked("A", H_A));
+        build(&good, &store, &env_root).unwrap();
+
+        let mut bad = Lockfile::new();
+        bad.packages.push(locked("A", H_A));
+        bad.packages.push(locked("B", "/etc"));
+        assert!(build(&bad, &store, &env_root).is_err());
+        assert!(
+            env_root.join("A").join("std.scad").exists(),
+            "the existing environment must be left as it was"
+        );
+    }
+
+    #[test]
     fn rejects_unsafe_package_name_from_the_lockfile() {
         // A tampered/committed lockfile must not be able to plant a symlink outside the env.
         let (_root, store) = store_with(&[]);
         let mut lock = Lockfile::new();
-        lock.packages.push(locked("../evil", "anyhash"));
+        lock.packages.push(locked("../evil", H_A));
         let env_dir = TempDir::new().unwrap();
         let err = build(&lock, &store, &env_dir.path().join("env")).unwrap_err();
         assert!(err.to_string().contains("valid package name"));
