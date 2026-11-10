@@ -782,6 +782,9 @@ fn add_dependency(
             if refs != 1 {
                 bail!("specify exactly one of --rev, --tag, or --branch");
             }
+            if let Some(rev) = &rev {
+                manifest::validate_commit_hash(rev).map_err(|e| anyhow::anyhow!(e))?;
+            }
             Dependency::Git(GitDependency {
                 git,
                 rev,
@@ -1112,7 +1115,7 @@ impl Fetcher for CachedGitFetcher {
 /// looks like a commit hash and is not one.
 fn holds_reference(reference: &GitRef, rev: &str) -> bool {
     match reference {
-        GitRef::Rev(requested) => rev.starts_with(requested.as_str()),
+        GitRef::Rev(requested) => rev.eq_ignore_ascii_case(requested),
         GitRef::Tag(_) | GitRef::Branch(_) => true,
     }
 }
@@ -1230,6 +1233,9 @@ fn current_dir_name() -> Option<String> {
 mod tests {
     use super::*;
 
+    /// A well-formed `rev` for fixtures: `add` refuses anything shorter.
+    const FULL_REV: &str = "061fef7c429628808e847696bb345a9b0ec6e279";
+
     #[test]
     fn workspace_relative_uses_the_workspace_token() {
         let cwd = "/home/u/proj";
@@ -1310,9 +1316,11 @@ mod tests {
         // Branch/tag names are held at the locked commit.
         assert!(holds_reference(&GitRef::Branch("main".into()), rev));
         assert!(holds_reference(&GitRef::Tag("v2.0.700".into()), rev));
-        // The same exact pin (full or abbreviated) is held — no needless re-fetch.
+        // The same exact pin is held — no needless re-fetch.
         assert!(holds_reference(&r(rev), rev));
-        assert!(holds_reference(&r("061fef7"), rev));
+        assert!(holds_reference(&r(&rev.to_uppercase()), rev));
+        // A prefix of the locked commit is not the same pin (and cannot be fetched).
+        assert!(!holds_reference(&r("061fef7"), rev));
         // A different exact commit must NOT be held — it has to be re-fetched.
         assert!(!holds_reference(
             &r("deadbeef1234567890000000000000000000cafe"),
@@ -1330,6 +1338,26 @@ mod tests {
         assert!(holds_reference(&GitRef::Tag("cafe2024".into()), rev));
         // The same spellings as a `rev` are exact pins, and a different one is not held.
         assert!(!holds_reference(&GitRef::Rev("20210101".into()), rev));
+    }
+
+    #[test]
+    fn add_dependency_refuses_an_abbreviated_rev() {
+        let mut m = Manifest::new("p");
+        let err = add_dependency(
+            &mut m,
+            "A",
+            Some("u".into()),
+            None,
+            Some("061fef7".into()),
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("full commit hash"), "{err}");
+        assert!(m.dependencies.is_empty(), "nothing is added");
     }
 
     #[test]
@@ -1355,7 +1383,7 @@ mod tests {
                 "A",
                 Some("u".into()),
                 None,
-                Some("r".into()),
+                Some(FULL_REV.into()),
                 Some("t".into()),
                 None,
                 None,
@@ -1374,7 +1402,7 @@ mod tests {
             "dotSCAD",
             Some(url),
             None,
-            Some("abc123".into()),
+            Some(FULL_REV.into()),
             None,
             None,
             Some("src".into()),
@@ -1395,7 +1423,7 @@ mod tests {
                 "bad",
                 Some("u".into()),
                 None,
-                Some("r".into()),
+                Some(FULL_REV.into()),
                 None,
                 None,
                 Some("../etc".into()),

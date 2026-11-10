@@ -224,6 +224,76 @@ fn lock_rejects_a_bad_library_root_on_a_git_dependency() {
 }
 
 #[test]
+fn an_abbreviated_rev_is_refused_with_a_clear_message() {
+    // git fetches a commit only by its full name, so `rev = "061fef7"` could never lock:
+    // it failed with git's "couldn't find remote ref". Meanwhile `add` accepted it and
+    // `sync` prefix-matched it against the lock as if it were supported.
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, rev) = make_lib(root.path());
+    let url = format!("file://{}", lib.display());
+    let short = &rev[..7];
+    let proj = project_with(root.path(), "[project]\nname = \"demo\"\n");
+    let before = fs::read_to_string(proj.join("scadman.toml")).unwrap();
+
+    // `add` refuses it and writes nothing.
+    let add = scadman(&proj, store.path(), &["add", "mylib", &url, "--rev", short]);
+    assert!(!add.status.success(), "add --rev <short> should fail");
+    let err = String::from_utf8_lossy(&add.stderr);
+    assert!(
+        err.contains("full") && err.contains(short),
+        "add should ask for the full hash: {err}"
+    );
+    assert_eq!(
+        fs::read_to_string(proj.join("scadman.toml")).unwrap(),
+        before
+    );
+
+    // A hand-written short rev is refused at lock, by scadman rather than by git.
+    let manifest = |r: &str| {
+        format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{url}\", rev = \"{r}\" }}\n"
+        )
+    };
+    fs::write(proj.join("scadman.toml"), manifest(short)).unwrap();
+    let lock = scadman(&proj, store.path(), &["lock"]);
+    assert!(!lock.status.success(), "lock of a short rev should fail");
+    let err = String::from_utf8_lossy(&lock.stderr);
+    assert!(
+        err.contains("mylib") && err.contains("full") && err.contains(short),
+        "lock should name the dependency and ask for the full hash: {err}"
+    );
+    assert!(
+        !err.contains("couldn't find remote ref"),
+        "the short rev must not reach git: {err}"
+    );
+
+    // The full hash locks, through `add` too.
+    fs::write(proj.join("scadman.toml"), &before).unwrap();
+    assert!(
+        scadman(&proj, store.path(), &["add", "mylib", &url, "--rev", &rev])
+            .status
+            .success()
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    assert!(scadman(&proj, store.path(), &["sync"]).status.success());
+
+    // Shortening the rev afterwards is a manifest change the lock no longer matches:
+    // sync must not accept it as "the same pin".
+    fs::write(proj.join("scadman.toml"), manifest(short)).unwrap();
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    assert!(
+        !sync.status.success(),
+        "sync must not prefix-match a short rev against the lock"
+    );
+    assert!(
+        String::from_utf8_lossy(&sync.stderr).contains("out of date"),
+        "{}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+}
+
+#[test]
 fn sync_rejects_a_stale_lockfile() {
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();
