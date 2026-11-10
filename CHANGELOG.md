@@ -77,6 +77,11 @@ All notable changes to scadman are recorded here. Format loosely follows
   but it is not in your dependencies", naming a library that does not exist. Such an
   import is now followed instead of reported, so scadman's warnings match what
   OpenSCAD can and cannot open.
+- **Both crates declare the minimum Rust version.** `rust-version = "1.88"` was set
+  for the workspace but neither crate inherited it. An older toolchain was already
+  turned away, but only because a dependency (`sha2`) requires 1.88 too; scadman's own
+  requirement was not stated where cargo reads it. cargo now names `scadman-cli` and
+  `scadman-core` in that message.
 - **`scadman add <url>` now says the URL is in the name position.** Passing only a
   git URL used to fail with the package-name character error, which read as if the
   URL were malformed. It now prints `` `<url>` looks like a git URL, not a package
