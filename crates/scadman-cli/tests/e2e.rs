@@ -121,11 +121,13 @@ fn sync_rejects_a_lockfile_with_a_wrong_hash() {
             "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{source}\", rev = \"{rev}\" }}\n"
         ),
     );
-    // Correct source + rev, but a bogus content hash: a fresh sync fetches and must reject.
+    // Correct source + rev, but the wrong (well-formed) content hash: a fresh sync fetches
+    // and must reject.
     fs::write(
         proj.join("scadman.lock"),
         format!(
-            "version = 1\n\n[[package]]\nname = \"mylib\"\nsource = \"{source}\"\nrev = \"{rev}\"\nhash = \"deadbeef\"\n"
+            "version = 1\n\n[[package]]\nname = \"mylib\"\nsource = \"{source}\"\nrev = \"{rev}\"\nhash = \"{}\"\n",
+            "0".repeat(64)
         ),
     )
     .unwrap();
@@ -139,6 +141,48 @@ fn sync_rejects_a_lockfile_with_a_wrong_hash() {
         String::from_utf8_lossy(&sync.stderr).contains("integrity"),
         "expected an integrity error"
     );
+}
+
+#[test]
+fn a_lockfile_hash_that_is_a_path_is_refused() {
+    // `hash` is joined onto the store root, so a lockfile could point a package at any
+    // directory on the machine: sync linked it into the environment and put it on
+    // OPENSCADPATH.
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, rev) = make_lib(root.path());
+    let source = format!("file://{}", lib.display());
+    let victim = root.path().join("victim");
+    fs::create_dir_all(&victim).unwrap();
+    fs::write(victim.join("private.txt"), "host-only\n").unwrap();
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{source}\", rev = \"{rev}\" }}\n"
+        ),
+    );
+
+    for cmd in ["sync", "env", "graph"] {
+        fs::write(
+            proj.join("scadman.lock"),
+            format!(
+                "version = 1\n\n[[package]]\nname = \"mylib\"\nsource = \"{source}\"\nrev = \"{rev}\"\nhash = \"{}\"\n",
+                victim.display()
+            ),
+        )
+        .unwrap();
+        let out = scadman(&proj, store.path(), &[cmd]);
+        assert!(!out.status.success(), "`{cmd}` should refuse the lockfile");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("hash") && err.contains("mylib"),
+            "`{cmd}` should name the field and the package: {err}"
+        );
+        assert!(
+            !proj.join(".scadman/env/mylib").exists(),
+            "`{cmd}`: nothing may be linked into the environment"
+        );
+    }
 }
 
 #[test]

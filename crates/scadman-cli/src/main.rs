@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 use scadman_core::{
     Dependency, Environment, Fetched, Fetcher, GitDependency, GitFetcher, GitRef, Installed,
     Lockfile, Manifest, Store, build_environment, canonical_url, fetch_git, lock_staleness,
-    lockfile, manifest, resolve, unmet_imports,
+    lockfile, manifest, resolve, unmet_imports, validate_content_hash,
 };
 use serde::Serialize;
 
@@ -620,7 +620,16 @@ fn check_lockfile_version(text: &str) -> Result<()> {
 /// Parse lockfile text, checking its version first (see [`check_lockfile_version`]).
 fn parse_lockfile(text: &str) -> Result<Lockfile> {
     check_lockfile_version(text)?;
-    Lockfile::from_toml(text).with_context(|| format!("parse {}", lockfile::LOCKFILE_FILE))
+    let lock =
+        Lockfile::from_toml(text).with_context(|| format!("parse {}", lockfile::LOCKFILE_FILE))?;
+    // A hash becomes a path under the store root. Refuse a malformed one here, where the
+    // lockfile is read, so nothing probes or links a path built from it.
+    for package in &lock.packages {
+        validate_content_hash(&package.hash)
+            .map_err(|reason| anyhow::anyhow!(reason))
+            .with_context(|| format!("{}: package `{}`", lockfile::LOCKFILE_FILE, package.name))?;
+    }
+    Ok(lock)
 }
 
 #[allow(clippy::too_many_arguments)]
