@@ -27,6 +27,11 @@ All notable changes to scadman are recorded here. Format loosely follows
   `scadman.toml` still tolerates unknown keys outside its dependency tables, so a
   library written for a newer scadman stays readable. **Breaking** for a manifest that
   carried extra keys: remove them.
+- **A git dependency naming more than one of `rev`, `tag` and `branch` is now refused.**
+  `lock` used to accept it and silently use `rev` over `tag`, and `tag` over `branch`, so
+  adding `tag = "v2"` beside an old `rev` line locked the old commit without a word.
+  `add` already rejected the combination; a hand-edited manifest, and a dependency's
+  own, are now held to the same rule.
 - **`scadman add <url>` now says the URL is in the name position.** Passing only a
   git URL used to fail with the package-name character error, which read as if the
   URL were malformed. It now prints `` `<url>` looks like a git URL, not a package
