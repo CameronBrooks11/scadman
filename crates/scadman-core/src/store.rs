@@ -97,7 +97,12 @@ impl Store {
             seq,
             &hash[..16]
         ));
-        copy_tree(src, &staging)?;
+        // The staging name is unique to this process and call, so no later insert reuses
+        // or clears it: a failed copy has to remove its own partial tree.
+        if let Err(err) = copy_tree(src, &staging) {
+            fs::remove_dir_all(&staging).ok();
+            return Err(err);
+        }
 
         match fs::rename(&staging, &dest) {
             Ok(()) => {}

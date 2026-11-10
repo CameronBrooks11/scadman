@@ -865,6 +865,69 @@ fn path_dependency_syncs_and_picks_up_edits() {
 }
 
 #[test]
+fn a_failed_store_insert_leaves_no_staging_directory() {
+    // Make the copy into the store fail partway, the way a full disk would: cap the size
+    // of any file the process may write, below the size of a file in the dependency. The
+    // content hash is computed first (reads only), so the failure lands in the copy.
+    // `trap '' XFSZ` makes the limit surface as an EFBIG error rather than killing the
+    // process; `ulimit -f` counts 512- or 1024-byte blocks depending on the shell, and
+    // either way 512 blocks is far below the 4 MiB file.
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let lib = root.path().join("sib");
+    fs::create_dir_all(&lib).unwrap();
+    fs::write(lib.join("s.scad"), "// s\n").unwrap();
+    fs::write(lib.join("big.bin"), vec![0u8; 4 * 1024 * 1024]).unwrap();
+    let proj = project_with(
+        root.path(),
+        "[project]\nname = \"app\"\n\n[dependencies]\nsib = { path = \"../sib\" }\n",
+    );
+
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg("trap '' XFSZ; ulimit -f 512; exec \"$0\" lock")
+        .arg(env!("CARGO_BIN_EXE_scadman"))
+        .current_dir(&proj)
+        .env("XDG_DATA_HOME", store.path())
+        .output()
+        .expect("run scadman under a file-size limit");
+    assert!(
+        !out.status.success(),
+        "the capped lock should fail; if it passed, the limit did not apply: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let store_dir = store.path().join("scadman").join("store");
+    let leftovers: Vec<String> = fs::read_dir(&store_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        leftovers.is_empty(),
+        "a failed insert must leave nothing in the store: {leftovers:?}"
+    );
+
+    // Without the limit the same lock succeeds, and the store holds exactly the entry.
+    let ok = scadman(&proj, store.path(), &["lock"]);
+    assert!(
+        ok.status.success(),
+        "lock: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let entries: Vec<String> = fs::read_dir(&store_dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries.len(), 1, "one store entry, no staging: {entries:?}");
+    assert!(!entries[0].starts_with(".staging"), "{entries:?}");
+}
+
+#[test]
 fn add_path_then_lock_end_to_end() {
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();
