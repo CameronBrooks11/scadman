@@ -8,7 +8,8 @@ can be agreed before the work is done.
 
 You need a Rust toolchain (1.88 or newer, via [rustup](https://rustup.rs)),
 [`just`](https://github.com/casey/just), [`pre-commit`](https://pre-commit.com) and
-`git`. `openscad` is needed only for the real-library tests below.
+`git`. `openscad` is needed only for the real-library tests below, and
+[`mdbook`](https://rust-lang.github.io/mdBook/) only to preview the documentation site.
 
 ```sh
 just setup    # rustfmt, clippy, and the pre-commit git hooks
@@ -39,15 +40,32 @@ cargo test -- --ignored
 ```
 crates/scadman-core/   data model and logic: manifest, lockfile, resolver, store, environment, include-scan
 crates/scadman-cli/    the `scadman` binary and its end-to-end tests
-docs/                  user guides and design records (see docs/README.md)
+docs/                  user guides and design records; the source of the documentation site
 fixtures/              real libraries pinned for tests, by reference
 ```
 
 Logic belongs in `scadman-core`; the CLI stays a thin shell over it.
 
-[AGENTS.md](AGENTS.md) holds the short form of the conventions and the design
-constraints. It is written for AI coding agents and applies equally to people. The
-reasoning behind the constraints is in [docs/DECISIONS.md](docs/DECISIONS.md).
+[AGENTS.md](https://github.com/CameronBrooks11/scadman/blob/main/AGENTS.md) holds the
+short form of the conventions and the design constraints. It is written for AI coding
+agents and applies equally to people. The reasoning behind the constraints is in the
+[foundational decisions](https://cameronbrooks11.github.io/scadman/DECISIONS.html).
+
+## Documentation
+
+The site at <https://cameronbrooks11.github.io/scadman/> is built by mdBook from
+`docs/`, configured in `book.toml`. `docs/SUMMARY.md` is its table of contents: a new
+page is published only once it is listed there. Link between pages with relative
+`.md` links, and to anything outside `docs/` with a full URL, so a link works both on
+the site and on GitHub.
+
+```sh
+just docs-serve   # preview at http://localhost:3000, rebuilding on change
+just docs-build   # one-shot build into book/
+```
+
+A pull request that touches the docs builds the site in CI; merging to `main` publishes
+it.
 
 ## Changes
 
@@ -56,10 +74,8 @@ reasoning behind the constraints is in [docs/DECISIONS.md](docs/DECISIONS.md).
   imperative and lowercase. One logical change per commit.
 - A behaviour change comes with a test. A bug fix comes with a test that fails without
   the fix.
-- Add a line under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for anything a
-  user would notice.
-- Update the docs in the same change when behaviour they describe moves:
-  [README.md](README.md) and [docs/](docs/).
+- Add a line under `## [Unreleased]` in `CHANGELOG.md` for anything a user would notice.
+- Update the docs in the same change when behaviour they describe moves.
 - Never bypass the pre-commit hooks.
 
 CI runs on every pull request: formatting, a type-check, a check that `Cargo.lock`
@@ -72,7 +88,8 @@ version. Clippy also runs, as an advisory job that does not block.
    (`cargo check`).
 2. Rename `## [Unreleased]` in `CHANGELOG.md` to the version and date, add a fresh
    empty `## [Unreleased]` above it, and add the link at the bottom of the file.
-3. Update the version in the README's `cargo install` line.
+3. Update the version in the `cargo install` line, in both `README.md` and
+   `docs/getting-started.md`.
 4. Merge, then tag the merge commit `v<version>` and push the tag.
 
 The tag triggers the release workflow, which builds the Linux binary from the committed

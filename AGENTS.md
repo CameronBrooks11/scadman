@@ -24,7 +24,7 @@ changelog and release steps.
 crates/
   scadman-core/    # data model + logic: manifest, lockfile, resolver, store, environment, include-scan
   scadman-cli/     # the `scadman` binary + end-to-end tests
-docs/              # user guides (manifest, library roots, path deps) + design records
+docs/              # user guides + design records; source of the docs site (book.toml, docs/SUMMARY.md)
 fixtures/          # archetype libraries pinned for tests (references, not vendored)
 ```
 
@@ -45,6 +45,8 @@ just run init     # run the CLI (args pass through, e.g. `just run add BOSL2 <ur
 - Conventional Commits (`type(scope): subject`). One logical change per commit.
 - A user-visible change gets a line under `## [Unreleased]` in `CHANGELOG.md`, and the
   docs that describe the behaviour move in the same change.
+- A new page under `docs/` is published only once it is listed in `docs/SUMMARY.md`.
+  Link between docs pages with relative `.md` links; link out of `docs/` with full URLs.
 - Keep the core library free of CLI/IO concerns where practical; the CLI is a thin shell.
 
 ## Constraints (design guardrails from the survey + decisions)

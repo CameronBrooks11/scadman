@@ -1,0 +1,23 @@
+# The documentation site (https://cameronbrooks11.github.io/scadman/), built by mdBook
+# from docs/. docs/SUMMARY.md is the table of contents: a page not listed there is not
+# published.
+
+[book]
+title = "scadman"
+description = "A project-oriented package manager for OpenSCAD libraries and scripts."
+authors = ["Cameron Brooks"]
+src = "docs"
+language = "en"
+
+[build]
+build-dir = "book"
+# A page named in SUMMARY.md that does not exist fails the build instead of being
+# created empty.
+create-missing = false
+
+[output.html]
+# The site is served from /scadman/, not a domain root; the 404 page needs this to
+# find its assets.
+site-url = "/scadman/"
+git-repository-url = "https://github.com/CameronBrooks11/scadman"
+edit-url-template = "https://github.com/CameronBrooks11/scadman/edit/main/{path}"

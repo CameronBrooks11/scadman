@@ -44,6 +44,14 @@ build:
 run *ARGS:
     cargo run -p scadman-cli -- {{ ARGS }}
 
+# Preview the documentation site with live reload (needs mdbook)
+docs-serve:
+    mdbook serve
+
+# Build the documentation site into book/ (needs mdbook)
+docs-build:
+    mdbook build
+
 # Remove build artifacts
 clean:
     cargo clean
