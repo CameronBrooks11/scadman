@@ -173,6 +173,66 @@ fn sync_rejects_a_stale_lockfile() {
 }
 
 #[test]
+fn sync_refuses_a_lockfile_holding_a_removed_dependency() {
+    // After `remove`, the library stayed locked: sync kept exposing it, so the project's
+    // own import of it kept rendering, and doctor called the lockfile up to date.
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let (lib, rev) = make_lib(root.path());
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
+            lib.display()
+        ),
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    assert!(scadman(&proj, store.path(), &["sync"]).status.success());
+    assert!(proj.join(".scadman/env/mylib").exists());
+
+    assert!(
+        scadman(&proj, store.path(), &["remove", "mylib"])
+            .status
+            .success()
+    );
+
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    assert!(
+        !sync.status.success(),
+        "sync must refuse while the lock still holds the removed dependency"
+    );
+    let err = String::from_utf8_lossy(&sync.stderr);
+    assert!(
+        err.contains("out of date") && err.contains("mylib") && err.contains("scadman lock"),
+        "should say the lock is out of date, name the library and the fix: {err}"
+    );
+
+    let doctor = scadman(&proj, store.path(), &["doctor"]);
+    let text = String::from_utf8_lossy(&doctor.stdout);
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("lockfile:"))
+        .expect("doctor prints a lockfile line");
+    assert!(
+        line.contains("out of date") && !line.contains("up to date"),
+        "doctor should not call it up to date: {line}"
+    );
+
+    // Re-locking clears it, and the library is gone from the environment.
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    assert!(
+        sync.status.success(),
+        "sync after lock: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    assert!(
+        !proj.join(".scadman/env/mylib").exists(),
+        "the removed library must no longer be exposed"
+    );
+}
+
+#[test]
 fn init_scaffolds_gitignore() {
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();

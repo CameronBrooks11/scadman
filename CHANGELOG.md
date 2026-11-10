@@ -44,6 +44,12 @@ All notable changes to scadman are recorded here. Format loosely follows
   and `update` no longer overwrite one either; the error says to upgrade scadman or
   delete the file. The version is read on its own, so a newer lockfile that does not
   parse is still reported by its version.
+- **A removed dependency no longer stays available.** After `scadman remove`, the
+  library stayed in the lockfile: `sync` and `run` went on exposing it, the project's
+  own import of it kept rendering, and `doctor` called the lockfile up to date. `sync`,
+  `run` and `env` now stop with the same "out of date … run `scadman lock`" error an
+  added-but-unlocked dependency gets, and `doctor` reports it. Libraries that are in
+  the lockfile because another one depends on them are unaffected.
 - **`scadman add <url>` now says the URL is in the name position.** Passing only a
   git URL used to fail with the package-name character error, which read as if the
   URL were malformed. It now prints `` `<url>` looks like a git URL, not a package
