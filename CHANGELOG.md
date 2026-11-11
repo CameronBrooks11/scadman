@@ -6,6 +6,14 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.1.0-alpha.4] — 2026-11-10
+
+Fourth alpha. A documentation site, and a run of fixes to how the manifest and the
+lockfile are read, most of them cases where scadman did the wrong thing without saying
+so. Some can stop a project that used to pass: a `scadman.toml` with unknown keys, a git
+dependency naming two refs, an abbreviated `rev`, and `sync` straight after `remove`.
+Each now fails with a message that says what to change.
+
 ### Added
 
 - **A documentation site** at <https://cameronbrooks11.github.io/scadman/>, built from
@@ -195,6 +203,7 @@ First public alpha. A working, project-oriented OpenSCAD dependency manager, gro
 GitHub-hosted git sources only; one version per identity; per-OS lockfile hashes; no hosted
 registry or native OpenSCAD-GUI integration yet. See the README's *Status & scope*.
 
+[0.1.0-alpha.4]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha
