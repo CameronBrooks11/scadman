@@ -32,7 +32,7 @@ On macOS, or another Linux architecture, build from source with a Rust toolchain
 (≥ 1.88):
 
 ```sh
-cargo install --locked --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha.3 scadman-cli
+cargo install --locked --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha.4 scadman-cli
 ```
 
 Either way, `git` and `openscad` need to be on `PATH`.
