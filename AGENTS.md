@@ -39,6 +39,10 @@ just build        # build all crates
 just run init     # run the CLI (args pass through, e.g. `just run add BOSL2 <url>`)
 ```
 
+`just test` skips two `#[ignore]` end-to-end tests. They fetch real libraries from
+GitHub over https and need OpenSCAD, so they run from a terminal, not from an agent
+session: `cargo test -- --ignored`.
+
 ## Conventions
 
 - Format before committing; `just check && just test` must pass. Never bypass hooks.
