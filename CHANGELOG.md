@@ -15,6 +15,11 @@ All notable changes to scadman are recorded here. Format loosely follows
   junction, which needs no admin rights or Developer Mode; the store defaults to
   `%LOCALAPPDATA%\scadman\store` unless `XDG_DATA_HOME` is set. CI runs the tests on
   Windows, where the hash goldens give the same values as on Linux and macOS.
+- **A Windows binary** in every release, `scadman-<version>-x86_64-pc-windows-msvc.zip`,
+  listed in `checksums.txt`, with PowerShell install steps in the docs (#126). Before
+  publishing, the release workflow installs each binary as the docs say on Linux,
+  macOS and Windows, and locks tessella v0.1.0 with it; the hash has to match on all
+  three.
 
 ### Changed
 

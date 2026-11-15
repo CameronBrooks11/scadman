@@ -27,6 +27,10 @@ jobs:
           # macos-latest is arm64; it cross-builds the Intel binary, which it cannot run.
           - { target: aarch64-apple-darwin, os: macos-latest, native: true }
           - { target: x86_64-apple-darwin, os: macos-latest, native: false }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, native: true }
+    defaults:
+      run:
+        shell: bash
     env:
       # The tag on a release; on a pull request, a placeholder (ref_name has a slash).
       VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
@@ -50,12 +54,20 @@ jobs:
         run: target/${{ matrix.target }}/release/scadman --version
 
       - name: Package
+        if: runner.os != 'Windows'
         run: tar -C "target/${{ matrix.target }}/release" -czf "scadman-$VERSION-${{ matrix.target }}.tar.gz" scadman
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path "target/${{ matrix.target }}/release/scadman.exe" -DestinationPath "scadman-$env:VERSION-${{ matrix.target }}.zip"
 
       - uses: actions/upload-artifact@v7
         with:
           name: scadman-${{ matrix.target }}
-          path: scadman-*.tar.gz
+          path: |
+            scadman-*.tar.gz
+            scadman-*.zip
           if-no-files-found: error
 
   # One job writes one checksums.txt over every archive.
@@ -76,7 +88,7 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: |
-          sha256sum scadman-*.tar.gz > checksums.txt
+          sha256sum scadman-*.tar.gz scadman-*.zip > checksums.txt
           cat checksums.txt
 
       - uses: actions/upload-artifact@v7
@@ -86,7 +98,8 @@ jobs:
           if-no-files-found: error
 
   # The install commands from README.md and docs/getting-started.md, run as written
-  # on each OS, against what is about to be published.
+  # on each OS, against what is about to be published. Then the installed binary locks
+  # a real library from GitHub, which has to hash the same on every OS.
   install:
     name: Install (${{ matrix.os }})
     needs: [checksums]
@@ -95,7 +108,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -119,8 +132,39 @@ jobs:
           xattr -d com.apple.quarantine scadman 2>/dev/null || true
           mkdir -p ~/.local/bin && install -m755 scadman ~/.local/bin/scadman
 
-      - name: Run it
-        run: ~/.local/bin/scadman --version
+      - name: Install as documented (Windows)
+        if: runner.os == 'Windows'
+        working-directory: dist
+        shell: pwsh
+        run: |
+          $zip = Get-Item scadman-*-x86_64-pc-windows-msvc.zip
+          $want = ((Select-String -Path checksums.txt -Pattern $zip.Name -SimpleMatch).Line -split '\s+')[0]
+          $have = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($have -ne $want) { throw "checksum mismatch for $($zip.Name)" }
+          Unblock-File $zip
+          $dir = "$env:LOCALAPPDATA\Programs\scadman"
+          Expand-Archive $zip -DestinationPath $dir -Force
+          [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$dir", "User")
+          "$dir" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Put it on PATH (Linux, macOS)
+        if: runner.os != 'Windows'
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # tessella v0.1.0's content hash, as locked on Linux. The same value on every OS
+      # is what lets a lockfile written on one verify on the others.
+      - name: Lock a real library
+        shell: bash
+        run: |
+          scadman --version
+          mkdir smoke && cd smoke
+          scadman init
+          scadman add tessella https://github.com/CameronBrooks11/tessella --tag v0.1.0
+          scadman lock
+          scadman sync
+          cat scadman.lock
+          grep -q 'hash = "116f662e81b428761c6a5ca1e3c1f0884ffa47d9e595bed4fb379744d5f2b9ad"' scadman.lock
+          test -f .scadman/env/tessella/tess.scad
 
   release:
     name: Release
@@ -169,4 +213,4 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" \
             --notes-file release-notes.md \
-            dist/scadman-*.tar.gz dist/checksums.txt
+            dist/scadman-*.tar.gz dist/scadman-*.zip dist/checksums.txt

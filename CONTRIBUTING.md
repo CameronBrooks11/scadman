@@ -92,8 +92,8 @@ version. Clippy also runs, as an advisory job that does not block.
    `docs/getting-started.md`.
 4. Merge, then tag the merge commit `v<version>` and push the tag.
 
-The tag triggers the release workflow, which builds the Linux and macOS binaries from
-the committed `Cargo.lock`, writes one `checksums.txt`, runs the documented install on
-Linux and macOS, and publishes a GitHub release whose notes are that version's
+The tag triggers the release workflow, which builds the Linux, macOS and Windows
+binaries from the committed `Cargo.lock`, writes one `checksums.txt`, runs the
+documented install on all three and locks a real library with each, and publishes a GitHub release whose notes are that version's
 CHANGELOG section. It fails if the section is missing. A pull request that changes the
 workflow runs everything but the publish.
