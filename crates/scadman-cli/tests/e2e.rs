@@ -21,6 +21,18 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
+/// A `file://` URL for a local directory, as git takes it and as a TOML string can hold
+/// it: `file:///tmp/x` on Unix, `file:///C:/Users/x` on Windows (no backslashes, which
+/// TOML would read as escapes).
+fn file_url(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    if path.starts_with('/') {
+        format!("file://{path}")
+    } else {
+        format!("file:///{path}")
+    }
+}
+
 fn scadman(project: &Path, store_home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_scadman"))
         .current_dir(project)
@@ -77,8 +89,8 @@ fn lock_then_sync_end_to_end() {
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
-            lib.display()
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\n",
+            file_url(&lib)
         ),
     );
 
@@ -117,8 +129,8 @@ fn lock_with_gitconfig(lib: &Path, rev: &str, gitconfig: Option<&Path>) -> (Stri
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
-            lib.display()
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\n",
+            file_url(lib)
         ),
     );
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_scadman"));
@@ -193,7 +205,7 @@ fn sync_rejects_a_lockfile_with_a_wrong_hash() {
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();
     let (lib, rev) = make_lib(root.path());
-    let source = format!("file://{}", lib.display());
+    let source = file_url(&lib);
     let proj = project_with(
         root.path(),
         &format!(
@@ -230,7 +242,7 @@ fn a_lockfile_hash_that_is_a_path_is_refused() {
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();
     let (lib, rev) = make_lib(root.path());
-    let source = format!("file://{}", lib.display());
+    let source = file_url(&lib);
     let victim = root.path().join("victim");
     fs::create_dir_all(&victim).unwrap();
     fs::write(victim.join("private.txt"), "host-only\n").unwrap();
@@ -246,7 +258,8 @@ fn a_lockfile_hash_that_is_a_path_is_refused() {
             proj.join("scadman.lock"),
             format!(
                 "version = 1\n\n[[package]]\nname = \"mylib\"\nsource = \"{source}\"\nrev = \"{rev}\"\nhash = \"{}\"\n",
-                victim.display()
+                // `/` separators, so a Windows path is still a valid TOML string.
+                victim.to_string_lossy().replace('\\', "/")
             ),
         )
         .unwrap();
@@ -279,8 +292,8 @@ fn lock_rejects_a_bad_library_root_on_a_git_dependency() {
         fs::write(
             proj.join("scadman.toml"),
             format!(
-                "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\", root = \"{bad}\" }}\n",
-                lib.display()
+                "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\", root = \"{bad}\" }}\n",
+                file_url(&lib)
             ),
         )
         .unwrap();
@@ -310,7 +323,7 @@ fn an_abbreviated_rev_is_refused_with_a_clear_message() {
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();
     let (lib, rev) = make_lib(root.path());
-    let url = format!("file://{}", lib.display());
+    let url = file_url(&lib);
     let short = &rev[..7];
     let proj = project_with(root.path(), "[project]\nname = \"demo\"\n");
     let before = fs::read_to_string(proj.join("scadman.toml")).unwrap();
@@ -377,7 +390,7 @@ fn sync_rejects_a_stale_lockfile() {
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();
     let (lib, rev) = make_lib(root.path());
-    let source = format!("file://{}", lib.display());
+    let source = file_url(&lib);
     let proj = project_with(
         root.path(),
         &format!(
@@ -413,8 +426,8 @@ fn sync_refuses_a_lockfile_holding_a_removed_dependency() {
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
-            lib.display()
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\n",
+            file_url(&lib)
         ),
     );
     assert!(scadman(&proj, store.path(), &["lock"]).status.success());
@@ -576,8 +589,8 @@ fn env_reports_path_and_json() {
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
-            lib.display()
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\n",
+            file_url(&lib)
         ),
     );
 
@@ -741,8 +754,8 @@ fn every_command_refuses_a_lockfile_of_an_unknown_version() {
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", branch = \"{branch}\" }}\n",
-            lib.display()
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", branch = \"{branch}\" }}\n",
+            file_url(&lib)
         ),
     );
     assert!(scadman(&proj, store.path(), &["lock"]).status.success());
@@ -839,8 +852,8 @@ fn lock_rejects_a_git_dependency_with_two_refs() {
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\", tag = \"v1\" }}\n",
-            lib.display()
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\", tag = \"v1\" }}\n",
+            file_url(&lib)
         ),
     );
 
@@ -901,8 +914,8 @@ fn doctor_reports_setup() {
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"d\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
-            lib.display()
+            "[project]\nname = \"d\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\n",
+            file_url(&lib)
         ),
     );
     let out = scadman(&proj, store.path(), &["doctor"]);
@@ -925,8 +938,8 @@ fn env_write_vscode_merges_settings() {
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"d\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
-            lib.display()
+            "[project]\nname = \"d\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\n",
+            file_url(&lib)
         ),
     );
     fs::create_dir_all(proj.join(".vscode")).unwrap();
@@ -965,8 +978,8 @@ fn graph_prints_tree_and_json() {
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
-            lib.display()
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\n",
+            file_url(&lib)
         ),
     );
     assert!(scadman(&proj, store.path(), &["lock"]).status.success());
@@ -1172,8 +1185,8 @@ fn path_dep_does_not_force_refetch_of_git_deps() {
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"app\"\n\n[dependencies]\nmygit = {{ git = \"file://{}\", rev = \"{rev}\" }}\nmysib = {{ path = \"../sib\" }}\n",
-            gitlib.display()
+            "[project]\nname = \"app\"\n\n[dependencies]\nmygit = {{ git = \"{}\", rev = \"{rev}\" }}\nmysib = {{ path = \"../sib\" }}\n",
+            file_url(&gitlib)
         ),
     );
 
@@ -1220,8 +1233,8 @@ fn a_hex_named_tag_is_held_at_its_locked_commit_beside_a_path_dep() {
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"app\"\n\n[dependencies]\nmygit = {{ git = \"file://{}\", tag = \"20210101\" }}\nmysib = {{ path = \"../sib\" }}\n",
-            gitlib.display()
+            "[project]\nname = \"app\"\n\n[dependencies]\nmygit = {{ git = \"{}\", tag = \"20210101\" }}\nmysib = {{ path = \"../sib\" }}\n",
+            file_url(&gitlib)
         ),
     );
     assert!(scadman(&proj, store.path(), &["lock"]).status.success());
@@ -1266,8 +1279,8 @@ fn changing_a_git_pin_still_nudges_even_with_a_path_dep() {
 
     let manifest = |git_rev: &str| {
         format!(
-            "[project]\nname = \"app\"\n\n[dependencies]\nmygit = {{ git = \"file://{}\", rev = \"{git_rev}\" }}\nmysib = {{ path = \"../sib\" }}\n",
-            gitlib.display()
+            "[project]\nname = \"app\"\n\n[dependencies]\nmygit = {{ git = \"{}\", rev = \"{git_rev}\" }}\nmysib = {{ path = \"../sib\" }}\n",
+            file_url(&gitlib)
         )
     };
     let proj = project_with(root.path(), &manifest(&rev));
@@ -1425,8 +1438,8 @@ fn update_advances_a_branch_dependency() {
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", branch = \"{branch}\" }}\n",
-            lib.display()
+            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"{}\", branch = \"{branch}\" }}\n",
+            file_url(&lib)
         ),
     );
     assert!(scadman(&proj, store.path(), &["lock"]).status.success());
@@ -1461,8 +1474,8 @@ fn update_leaves_a_rev_pin_untouched() {
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
-            lib.display()
+            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\n",
+            file_url(&lib)
         ),
     );
     assert!(scadman(&proj, store.path(), &["lock"]).status.success());
@@ -1495,9 +1508,9 @@ fn update_scopes_to_named_dependencies() {
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"app\"\n\n[dependencies]\na = {{ git = \"file://{}\", branch = \"{ba}\" }}\nb = {{ git = \"file://{}\", branch = \"{bb}\" }}\n",
-            lib_a.display(),
-            lib_b.display()
+            "[project]\nname = \"app\"\n\n[dependencies]\na = {{ git = \"{}\", branch = \"{ba}\" }}\nb = {{ git = \"{}\", branch = \"{bb}\" }}\n",
+            file_url(&lib_a),
+            file_url(&lib_b)
         ),
     );
     assert!(scadman(&proj, store.path(), &["lock"]).status.success());
@@ -1565,8 +1578,8 @@ fn full_update_advances_a_transitive_branch_dep() {
     fs::write(
         liba.join("scadman.toml"),
         format!(
-            "[project]\nname = \"a\"\n\n[dependencies]\nb = {{ git = \"file://{}\", branch = \"{bb}\" }}\n",
-            libb.display()
+            "[project]\nname = \"a\"\n\n[dependencies]\nb = {{ git = \"{}\", branch = \"{bb}\" }}\n",
+            file_url(&libb)
         ),
     )
     .unwrap();
@@ -1577,8 +1590,8 @@ fn full_update_advances_a_transitive_branch_dep() {
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"app\"\n\n[dependencies]\na = {{ git = \"file://{}\", branch = \"{ba}\" }}\n",
-            liba.display()
+            "[project]\nname = \"app\"\n\n[dependencies]\na = {{ git = \"{}\", branch = \"{ba}\" }}\n",
+            file_url(&liba)
         ),
     );
     assert!(scadman(&proj, store.path(), &["lock"]).status.success());
@@ -1608,8 +1621,8 @@ fn doctor_notes_branch_tracking_only_when_present() {
     let tracking = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", branch = \"{branch}\" }}\n",
-            lib.display()
+            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"{}\", branch = \"{branch}\" }}\n",
+            file_url(&lib)
         ),
     );
     let out = scadman(&tracking, store.path(), &["doctor"]);
@@ -1621,8 +1634,8 @@ fn doctor_notes_branch_tracking_only_when_present() {
     fs::write(
         pinned.join("scadman.toml"),
         format!(
-            "[project]\nname = \"pinned\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
-            lib.display()
+            "[project]\nname = \"pinned\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\n",
+            file_url(&lib)
         ),
     )
     .unwrap();
@@ -1641,8 +1654,8 @@ fn update_with_no_prior_lock_reports_added() {
     let proj = project_with(
         root.path(),
         &format!(
-            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
-            lib.display()
+            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\n",
+            file_url(&lib)
         ),
     );
     let out = scadman(&proj, store.path(), &["update"]);
@@ -1663,7 +1676,7 @@ fn update_reports_a_removed_dependency() {
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();
     let (lib, rev) = make_lib(root.path());
-    let src = format!("file://{}", lib.display());
+    let src = file_url(&lib);
     let proj = project_with(
         root.path(),
         &format!(
@@ -1712,11 +1725,7 @@ fn add_without_a_ref_tracks_the_default_branch() {
             .success()
     );
 
-    let out = scadman(
-        &proj,
-        store.path(),
-        &["add", "mylib", &format!("file://{}", lib.display())],
-    );
+    let out = scadman(&proj, store.path(), &["add", "mylib", &file_url(&lib)]);
     assert!(
         out.status.success(),
         "bare add failed: {}",
