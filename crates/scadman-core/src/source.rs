@@ -5,6 +5,10 @@
 //! requested revision is fetched (shallow), and the resolved commit SHA is returned so a
 //! branch or tag can be pinned in the lockfile. The `.git` directory is dropped by the
 //! store, so what lands is the working tree alone.
+//!
+//! Every git command runs with line-ending conversion off (`core.autocrlf=false`,
+//! `core.eol=lf`), so a checkout is the commit's bytes whatever the user's git config
+//! says, and its content hash is the same on every OS.
 
 use std::io;
 use std::path::Path;
@@ -54,8 +58,18 @@ pub fn fetch_git(store: &Store, url: &str, reference: &str) -> io::Result<Acquir
     Ok(Acquired { entry, rev })
 }
 
+/// Overrides that keep git from rewriting line endings on checkout. Git for Windows sets
+/// `core.autocrlf=true` by default, and a library's `text=auto` attribute follows
+/// `core.eol`; either would change the content, and so the hash, per machine.
+const NO_EOL_CONVERSION: [&str; 4] = ["-c", "core.autocrlf=false", "-c", "core.eol=lf"];
+
 fn git(cwd: &Path, args: &[&str]) -> io::Result<std::process::Output> {
-    Command::new("git").arg("-C").arg(cwd).args(args).output()
+    Command::new("git")
+        .args(NO_EOL_CONVERSION)
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> io::Result<()> {
