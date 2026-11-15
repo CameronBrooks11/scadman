@@ -11,6 +11,15 @@ All notable changes to scadman are recorded here. Format loosely follows
 - **macOS binaries** for Apple Silicon (`aarch64-apple-darwin`) and Intel
   (`x86_64-apple-darwin`) in every release, beside the Linux one, all listed in the one
   `checksums.txt` (#54). The install docs cover them. CI runs the tests on macOS too.
+- **Windows support** (#53). The environment links each library with a directory
+  junction, which needs no admin rights or Developer Mode; the store defaults to
+  `%LOCALAPPDATA%\scadman\store` unless `XDG_DATA_HOME` is set. CI runs the tests on
+  Windows, where the hash goldens give the same values as on Linux and macOS.
+
+### Changed
+
+- **`env --write-vscode` writes `/` after `${workspaceFolder}` on every OS**, so settings
+  written on Windows work for a collaborator on Linux or macOS.
 
 ### Fixed
 

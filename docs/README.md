@@ -14,9 +14,9 @@ New here? Start with [Getting started](getting-started.md).
 ## How it works
 
 A dependency is resolved to an exact commit, its content is hashed and stored immutably
-under that hash (`~/.local/share/scadman/store/<hash>/`), and `sync` builds a per-project
-environment (`.scadman/env/`) that exposes each library under its own name, symlinked to
-the store, with `OPENSCADPATH` pointing at it. So a library's own `include <BOSL2/…>`
+under that hash in a per-user store, and `sync` builds a per-project environment
+(`.scadman/env/`) that exposes each library under its own name, linked to the store, with
+`OPENSCADPATH` pointing at it. So a library's own `include <BOSL2/…>`
 resolves to exactly the pinned content.
 
 OpenSCAD has a flat namespace (`include` is textual, no module scoping), so scadman
@@ -33,9 +33,9 @@ against real libraries (BOSL2, NopSCADlib, MCAD, dotSCAD, Round-Anything) plus a
 
 - Git and local path sources only; no hosted registry or version-range dependencies yet.
 - One resolved version per library, a consequence of OpenSCAD's flat `include` namespace.
-- Linux and macOS; Windows isn't supported yet. Lockfiles are reproducible across both:
-  scadman fetches with git's line-ending conversion off, though Unicode filename
-  normalization can still change a content hash in edge cases.
+- Linux, macOS and Windows. Lockfiles are reproducible across all three: paths hash with
+  `/` everywhere and scadman fetches with git's line-ending conversion off, though
+  Unicode filename normalization can still change a content hash in edge cases.
 - Path dependencies are a local-development convenience, not a reproducible pin.
 - Nothing prunes the store yet
   ([#96](https://github.com/CameronBrooks11/scadman/issues/96)); it is safe to delete,
