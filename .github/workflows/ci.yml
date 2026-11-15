@@ -131,12 +131,18 @@ jobs:
       - name: Check on the declared minimum
         run: cargo check --all-targets --all-features
 
+  # Every OS a release ships a binary for. Lockfiles must verify across them, so
+  # the hash goldens run on each.
   test:
-    name: Test
+    name: Test (${{ matrix.os }})
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

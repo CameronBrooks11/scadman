@@ -1051,6 +1051,10 @@ fn path_dependency_syncs_and_picks_up_edits() {
     );
 }
 
+// Linux only: on macOS `fs::copy` clones the file on APFS without writing its bytes, so
+// the size cap never trips, and Windows has no `ulimit`. The cleanup under test is the
+// store's, the same code on every OS.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_failed_store_insert_leaves_no_staging_directory() {
     // Make the copy into the store fail partway, the way a full disk would: cap the size
