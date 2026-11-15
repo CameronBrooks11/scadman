@@ -6,6 +6,11 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.1.0-alpha.5] — 2026-11-15
+
+Fifth alpha. scadman runs on Windows and macOS as well as Linux, with a prebuilt binary
+for each, and a lockfile written on any of them verifies on the others.
+
 ### Added
 
 - **macOS binaries** for Apple Silicon (`aarch64-apple-darwin`) and Intel
@@ -232,6 +237,7 @@ First public alpha. A working, project-oriented OpenSCAD dependency manager, gro
 GitHub-hosted git sources only; one version per identity; per-OS lockfile hashes; no hosted
 registry or native OpenSCAD-GUI integration yet. See the README's *Status & scope*.
 
+[0.1.0-alpha.5]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.5
 [0.1.0-alpha.4]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.2

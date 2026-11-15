@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "scadman-cli"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -365,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "scadman-core"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "junction",
  "regex",
