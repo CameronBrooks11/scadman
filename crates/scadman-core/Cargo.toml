@@ -13,3 +13,6 @@ toml.workspace = true
 sha2.workspace = true
 regex.workspace = true
 tempfile.workspace = true
+
+[target."cfg(windows)".dependencies]
+junction = "1"

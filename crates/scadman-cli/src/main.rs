@@ -327,8 +327,10 @@ fn write_vscode_settings(openscadpath: &str) -> Result<()> {
 }
 
 /// Rewrite an `OPENSCADPATH` (absolute, under the current project) to use VS Code's
-/// `${workspaceFolder}` token, so the written settings are portable across checkouts. Paths
-/// outside the project (unusual) are left absolute.
+/// `${workspaceFolder}` token, so the written settings are portable across checkouts. The
+/// part after the token always uses `/`, which VS Code reads on every OS, so settings
+/// written on Windows work for a collaborator on Linux or macOS. Paths outside the project
+/// (unusual) are left absolute.
 fn workspace_relative(openscadpath: &str) -> String {
     let Ok(cwd) = std::env::current_dir() else {
         return openscadpath.to_string();
@@ -336,19 +338,27 @@ fn workspace_relative(openscadpath: &str) -> String {
     workspace_relative_to(openscadpath, &cwd.to_string_lossy())
 }
 
+/// The separator between `OPENSCADPATH` entries on this platform.
+const PATH_LIST_SEPARATOR: char = if cfg!(windows) { ';' } else { ':' };
+
 fn workspace_relative_to(openscadpath: &str, cwd: &str) -> String {
     openscadpath
-        .split(':')
+        .split(PATH_LIST_SEPARATOR)
         .map(|p| match p.strip_prefix(cwd) {
             // Only at a path-component boundary, so a sibling like `/a/proj-shared` is left
             // absolute when cwd is `/a/proj` (a raw prefix would mangle it).
-            Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+            Some(rest) if rest.is_empty() || rest.starts_with(std::path::is_separator) => {
+                let rest = if cfg!(windows) {
+                    rest.replace('\\', "/")
+                } else {
+                    rest.to_string()
+                };
                 format!("${{workspaceFolder}}{rest}")
             }
             _ => p.to_string(),
         })
         .collect::<Vec<_>>()
-        .join(":")
+        .join(&PATH_LIST_SEPARATOR.to_string())
 }
 
 fn doctor_cmd() -> Result<()> {
@@ -367,6 +377,9 @@ fn doctor_cmd() -> Result<()> {
                 " (not created yet)"
             }
         ),
+        None if cfg!(windows) => {
+            println!("store:        unavailable ($XDG_DATA_HOME and %LOCALAPPDATA% unset)")
+        }
         None => println!("store:        unavailable ($XDG_DATA_HOME and $HOME unset)"),
     }
 
@@ -1246,12 +1259,15 @@ mod tests {
             "${workspaceFolder}/.scadman/env"
         );
         // Multiple (on_path) entries are each rewritten; the separator is preserved.
+        let sep = PATH_LIST_SEPARATOR;
         assert_eq!(
             workspace_relative_to(
-                "/home/u/proj/.scadman/env:/home/u/proj/.scadman/env/dotSCAD",
+                &format!("/home/u/proj/.scadman/env{sep}/home/u/proj/.scadman/env/dotSCAD"),
                 cwd
             ),
-            "${workspaceFolder}/.scadman/env:${workspaceFolder}/.scadman/env/dotSCAD"
+            format!(
+                "${{workspaceFolder}}/.scadman/env{sep}${{workspaceFolder}}/.scadman/env/dotSCAD"
+            )
         );
         // A path outside the project is left absolute.
         assert_eq!(workspace_relative_to("/opt/global", cwd), "/opt/global");

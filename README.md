@@ -77,7 +77,7 @@ The same pages are in [docs/](docs/).
 ## Status
 
 An alpha: usable end-to-end and validated against real libraries, with rough edges and
-breaking changes to come. Git and local path sources only; Linux and macOS. The
+breaking changes to come. Git and local path sources only; Linux, macOS and Windows. The
 [introduction](https://cameronbrooks11.github.io/scadman/) lists the current limits, and
 planned work is in the
 [post-alpha roadmap](https://github.com/CameronBrooks11/scadman/issues/44).

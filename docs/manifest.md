@@ -129,8 +129,8 @@ One edit is not detected: a changed `tag` or `branch` name on an unchanged URL. 
 |---|---|---|
 | `scadman.toml` | The manifest. | yes |
 | `scadman.lock` | The lockfile. | yes |
-| `.scadman/env/` | The project environment: one symlink per library, rebuilt on every `sync`. | no (`init` ignores it) |
-| `$XDG_DATA_HOME/scadman/store/`, or `~/.local/share/scadman/store/` | The store: one immutable directory per content hash, shared by all projects. | not in the project |
+| `.scadman/env/` | The project environment: one link per library (a symlink, or a directory junction on Windows), rebuilt on every `sync`. | no (`init` ignores it) |
+| `$XDG_DATA_HOME/scadman/store/`, or else `~/.local/share/scadman/store/` (Linux, macOS) or `%LOCALAPPDATA%\scadman\store\` (Windows) | The store: one immutable directory per content hash, shared by all projects. | not in the project |
 
 A library's stored copy is its working tree without `.git`. Symbolic links inside a
 library are not copied. File modes do not affect the hash.

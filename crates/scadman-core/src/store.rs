@@ -57,13 +57,15 @@ impl Store {
     }
 
     /// The default per-user store root: `$XDG_DATA_HOME/scadman/store`, falling back to
-    /// `$HOME/.local/share/scadman/store`. Returns `None` if neither is set.
+    /// `$HOME/.local/share/scadman/store`, or on Windows to
+    /// `%LOCALAPPDATA%\scadman\store`. Returns `None` if none of them is set.
     pub fn default_root() -> Option<PathBuf> {
         // Per the XDG spec a relative $XDG_DATA_HOME is invalid and must be ignored.
-        if let Some(dir) = std::env::var_os("XDG_DATA_HOME")
-            .filter(|d| !d.is_empty() && Path::new(d).is_absolute())
-        {
-            return Some(PathBuf::from(dir).join("scadman").join("store"));
+        if let Some(dir) = absolute_var("XDG_DATA_HOME") {
+            return Some(dir.join("scadman").join("store"));
+        }
+        if cfg!(windows) {
+            return Some(absolute_var("LOCALAPPDATA")?.join("scadman").join("store"));
         }
         let home = std::env::var_os("HOME").filter(|d| !d.is_empty())?;
         Some(
@@ -146,6 +148,13 @@ pub fn content_hash(dir: &Path) -> io::Result<String> {
         hasher.update(&bytes);
     }
     Ok(hex(&hasher.finalize()))
+}
+
+/// An environment variable holding an absolute path, if it is set to one.
+fn absolute_var(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|d| !d.is_empty() && Path::new(d).is_absolute())
+        .map(PathBuf::from)
 }
 
 /// A relative path as the hash sees it: its components joined with `/`, whatever the
