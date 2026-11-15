@@ -153,7 +153,8 @@ jobs:
 
   # OpenSCAD 2021.01, the current stable release, cannot read through a junction or a
   # symlink on Windows once a library includes its own files (#132). Render a real
-  # library with nested includes through `scadman run`, as a Windows user would.
+  # library with nested includes through `scadman run`, as a Windows user would: with
+  # OpenSCAD where its installer puts it, which is not on PATH (#133).
   render-windows:
     name: Render (windows-latest, OpenSCAD 2021.01)
     needs: [changes]
@@ -169,11 +170,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --locked -p scadman-cli
-      - name: Fetch OpenSCAD 2021.01
+      - name: Install OpenSCAD 2021.01 where its installer puts it, off PATH
         run: |
           Invoke-WebRequest https://files.openscad.org/OpenSCAD-2021.01-x86-64.zip -OutFile osc.zip
           Expand-Archive osc.zip -DestinationPath "$env:RUNNER_TEMP\osc"
-          "$env:RUNNER_TEMP\osc\openscad-2021.01" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          Move-Item "$env:RUNNER_TEMP\osc\openscad-2021.01" "$env:ProgramFiles\OpenSCAD"
+          if (Get-Command openscad -ErrorAction SilentlyContinue) { throw "openscad is on PATH, so this would not test the fallback" }
       - name: Render tessella through scadman run
         run: |
           $sm = "$env:GITHUB_WORKSPACE\target\debug\scadman.exe"
@@ -182,6 +184,7 @@ jobs:
           & $sm init
           & $sm add tessella https://github.com/CameronBrooks11/tessella --tag v0.1.0
           & $sm lock
+          & $sm doctor
           "include <tessella/tess.scad>`ncube(1);" | Set-Content demo.scad
           & $sm run demo.scad -o demo.stl
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path demo.stl)) { throw "scadman run did not render demo.stl" }

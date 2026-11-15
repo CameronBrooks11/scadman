@@ -1768,3 +1768,49 @@ fn doctor_reports_an_openscad_requirement() {
     let out2 = scadman(&bare, store.path(), &["doctor"]);
     assert!(!String::from_utf8_lossy(&out2.stdout).contains("requires:"));
 }
+
+#[cfg(unix)]
+#[test]
+fn openscad_env_names_the_binary_for_doctor_and_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    // A stand-in OpenSCAD, off PATH: it reports a version and records its arguments.
+    let fake = root.path().join("my-openscad");
+    fs::write(
+        &fake,
+        "#!/bin/sh\necho 'OpenSCAD version 2099.01' >&2\necho \"$@\" > \"$0.args\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let proj = project_with(root.path(), "[project]\nname = \"d\"\n");
+    let with_env = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_scadman"))
+            .current_dir(&proj)
+            .env("XDG_DATA_HOME", store.path())
+            .env("OPENSCAD", &fake)
+            .args(args)
+            .output()
+            .expect("run scadman")
+    };
+
+    let doctor = with_env(&["doctor"]);
+    let text = String::from_utf8_lossy(&doctor.stdout);
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("openscad:"))
+        .expect("doctor prints an openscad line");
+    assert!(
+        line.contains("OpenSCAD version 2099.01") && line.contains("my-openscad"),
+        "doctor should report the $OPENSCAD binary and where it is: {line}"
+    );
+
+    let run = with_env(&["run", "demo.scad", "-o", "out.stl"]);
+    assert!(
+        run.status.success(),
+        "run: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let args = fs::read_to_string(root.path().join("my-openscad.args")).unwrap();
+    assert_eq!(args.trim(), "demo.scad -o out.stl");
+}
