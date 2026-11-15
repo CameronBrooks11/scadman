@@ -6,6 +6,12 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.1.0-alpha.6] — 2026-11-15
+
+Sixth alpha. Two Windows fixes found on a real Windows 11 machine with OpenSCAD 2021.01:
+the environment is now real files there, and scadman finds OpenSCAD where its installer
+puts it.
+
 ### Added
 
 - **scadman finds OpenSCAD where its Windows installer puts it** (#133). The installer
@@ -256,6 +262,7 @@ First public alpha. A working, project-oriented OpenSCAD dependency manager, gro
 GitHub-hosted git sources only; one version per identity; per-OS lockfile hashes; no hosted
 registry or native OpenSCAD-GUI integration yet. See the README's *Status & scope*.
 
+[0.1.0-alpha.6]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.6
 [0.1.0-alpha.5]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.5
 [0.1.0-alpha.4]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.3

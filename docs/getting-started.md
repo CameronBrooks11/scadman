@@ -54,7 +54,7 @@ open a new terminal to pick it up. scadman also needs
 On another platform, build from source with a Rust toolchain (≥ 1.88):
 
 ```sh
-cargo install --locked --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha.5 scadman-cli
+cargo install --locked --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha.6 scadman-cli
 ```
 
 Either way, `git` needs to be on `PATH`. scadman finds OpenSCAD through `$OPENSCAD` if you
