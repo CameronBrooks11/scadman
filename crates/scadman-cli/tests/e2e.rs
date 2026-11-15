@@ -109,6 +109,85 @@ fn lock_then_sync_end_to_end() {
     assert_eq!(fs::read_to_string(via_env).unwrap(), GREET);
 }
 
+/// Lock `lib` at `rev` in a fresh project and store, with `GIT_CONFIG_GLOBAL` set to
+/// `gitconfig` for scadman's git if given; return the lockfile and the stored file.
+fn lock_with_gitconfig(lib: &Path, rev: &str, gitconfig: Option<&Path>) -> (String, String) {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"file://{}\", rev = \"{rev}\" }}\n",
+            lib.display()
+        ),
+    );
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_scadman"));
+    cmd.current_dir(&proj)
+        .env("XDG_DATA_HOME", store.path())
+        .args(["sync"]);
+    if let Some(config) = gitconfig {
+        cmd.env("GIT_CONFIG_GLOBAL", config);
+    }
+    let out = cmd.output().expect("run scadman");
+    assert!(
+        out.status.success(),
+        "sync failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stored = fs::read_to_string(proj.join(".scadman/env/mylib/greet.scad")).unwrap();
+    (
+        fs::read_to_string(proj.join("scadman.lock")).unwrap(),
+        stored,
+    )
+}
+
+#[test]
+fn a_users_line_ending_config_does_not_change_the_lock() {
+    let root = TempDir::new().unwrap();
+    let (lib, rev) = make_lib(root.path());
+    // A second library whose attributes leave line endings to `core.eol`.
+    let attr_lib = root.path().join("attrlib");
+    fs::create_dir_all(&attr_lib).unwrap();
+    fs::write(attr_lib.join("greet.scad"), GREET).unwrap();
+    fs::write(attr_lib.join(".gitattributes"), "* text=auto\n").unwrap();
+    git(&attr_lib, &["init", "--quiet"]);
+    git(&attr_lib, &["add", "-A"]);
+    git(
+        &attr_lib,
+        &[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "--quiet",
+            "-m",
+            "init",
+        ],
+    );
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&attr_lib)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let attr_rev = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+    // Git for Windows' default, and a CRLF `core.eol`: each would check out CRLF.
+    let cases = [
+        (&lib, &rev, "[core]\n\tautocrlf = true\n"),
+        (&attr_lib, &attr_rev, "[core]\n\teol = crlf\n"),
+    ];
+    for (library, library_rev, config_text) in cases {
+        let config = root.path().join("gitconfig");
+        fs::write(&config, config_text).unwrap();
+        let (plain_lock, _) = lock_with_gitconfig(library, library_rev, None);
+        let (crlf_lock, stored) = lock_with_gitconfig(library, library_rev, Some(&config));
+        assert_eq!(stored, GREET, "stored with CRLF under {config_text:?}");
+        assert_eq!(plain_lock, crlf_lock, "lock moved under {config_text:?}");
+    }
+}
+
 #[test]
 fn sync_rejects_a_lockfile_with_a_wrong_hash() {
     let root = TempDir::new().unwrap();

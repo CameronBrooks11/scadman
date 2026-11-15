@@ -12,6 +12,15 @@ All notable changes to scadman are recorded here. Format loosely follows
   (`x86_64-apple-darwin`) in every release, beside the Linux one, all listed in the one
   `checksums.txt` (#54). The install docs cover them. CI runs the tests on macOS too.
 
+### Fixed
+
+- **A user's line-ending settings no longer change what is stored** (#125). scadman's
+  git commands run with `core.autocrlf=false` and `core.eol=lf`, so a library is stored
+  as its commit's bytes. Before, `core.autocrlf=true` (Git for Windows' default) or a
+  CRLF `core.eol` under a library's `text=auto` attribute checked files out with CRLF,
+  and the content hash no longer matched a lockfile written elsewhere. Paths are now
+  hashed with `/` on every platform; every existing hash is unchanged.
+
 ## [0.1.0-alpha.4] — 2026-11-10
 
 Fourth alpha. A documentation site, and a run of fixes to how the manifest and the

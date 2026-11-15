@@ -33,9 +33,9 @@ against real libraries (BOSL2, NopSCADlib, MCAD, dotSCAD, Round-Anything) plus a
 
 - Git and local path sources only; no hosted registry or version-range dependencies yet.
 - One resolved version per library, a consequence of OpenSCAD's flat `include` namespace.
-- Linux and macOS; Windows isn't supported yet. Lockfiles are reproducible across both,
-  though git's line-ending conversion or Unicode filename normalization can still change
-  a content hash in edge cases.
+- Linux and macOS; Windows isn't supported yet. Lockfiles are reproducible across both:
+  scadman fetches with git's line-ending conversion off, though Unicode filename
+  normalization can still change a content hash in edge cases.
 - Path dependencies are a local-development convenience, not a reproducible pin.
 - Nothing prunes the store yet
   ([#96](https://github.com/CameronBrooks11/scadman/issues/96)); it is safe to delete,
