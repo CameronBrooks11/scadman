@@ -6,6 +6,10 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.1.0-alpha.7] — 2026-11-15
+
+Seventh alpha. A setup action, so a project's CI installs scadman with one line.
+
 ### Added
 
 - **A setup action for GitHub Actions** (#123): `CameronBrooks11/scadman/setup@<tag>`
@@ -270,6 +274,7 @@ First public alpha. A working, project-oriented OpenSCAD dependency manager, gro
 GitHub-hosted git sources only; one version per identity; per-OS lockfile hashes; no hosted
 registry or native OpenSCAD-GUI integration yet. See the README's *Status & scope*.
 
+[0.1.0-alpha.7]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.7
 [0.1.0-alpha.6]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.6
 [0.1.0-alpha.5]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.5
 [0.1.0-alpha.4]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.4
