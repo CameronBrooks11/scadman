@@ -73,7 +73,9 @@ On another platform, build from source with a Rust toolchain (≥ 1.88):
 cargo install --locked --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha.5 scadman-cli
 ```
 
-Either way, `git` and `openscad` need to be on `PATH`.
+Either way, `git` needs to be on `PATH`. scadman finds OpenSCAD through `$OPENSCAD` if you
+set it to the program's path, then `PATH`, and on Windows the installer's folder under
+`%ProgramFiles%`, which it does not add to `PATH`.
 
 ## Use
 

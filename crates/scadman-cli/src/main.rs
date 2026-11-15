@@ -363,9 +363,11 @@ fn workspace_relative_to(openscadpath: &str, cwd: &str) -> String {
 
 fn doctor_cmd() -> Result<()> {
     let installed = openscad_version();
+    let program = openscad_program();
     match &installed {
-        Some(version) => println!("openscad:     {version}"),
-        None => println!("openscad:     not found on PATH — `scadman run` will fail"),
+        Some(version) if program.as_os_str() == "openscad" => println!("openscad:     {version}"),
+        Some(version) => println!("openscad:     {version} ({})", program.display()),
+        None => println!("openscad:     not found ({OPENSCAD_SEARCH}) — `scadman run` will fail"),
     }
     match Store::default_root() {
         Some(root) => println!(
@@ -430,7 +432,7 @@ fn doctor_cmd() -> Result<()> {
                 format!("`{required}` unrecognized — use e.g. `2021.01` or `>=2021.01`")
             } else {
                 match &installed {
-                    None => format!("OpenSCAD ≥ {req} — but it is not on PATH"),
+                    None => format!("OpenSCAD ≥ {req} — but it was not found"),
                     Some(have) => match manifest::meets_openscad_requirement(have, required) {
                         Some(true) => format!("OpenSCAD ≥ {req} (ok)"),
                         Some(false) => {
@@ -507,10 +509,68 @@ fn report_lockfile(manifest: &Manifest) {
     }
 }
 
-/// The `openscad --version` line, or `None` if it is not on `PATH`.
+/// Where scadman looks for OpenSCAD, for messages that say it was not found.
+const OPENSCAD_SEARCH: &str = if cfg!(windows) {
+    "$OPENSCAD, PATH, or %ProgramFiles%\\OpenSCAD*"
+} else {
+    "$OPENSCAD or PATH"
+};
+
+/// The OpenSCAD to run: `$OPENSCAD` if it is set, else `openscad` on `PATH`. On Windows,
+/// failing those, the installer's folder under `%ProgramFiles%`, which it does not add to
+/// `PATH` (#133).
+fn openscad_program() -> PathBuf {
+    if let Some(program) = std::env::var_os("OPENSCAD").filter(|v| !v.is_empty()) {
+        return PathBuf::from(program);
+    }
+    if cfg!(windows) && !on_path("openscad.exe") {
+        let roots: Vec<PathBuf> = ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
+            .iter()
+            .filter_map(|name| std::env::var_os(name).filter(|v| !v.is_empty()))
+            .map(PathBuf::from)
+            .collect();
+        if let Some(found) = installed_openscad(&roots) {
+            return found;
+        }
+    }
+    PathBuf::from("openscad")
+}
+
+/// Whether a file named `exe` is in a directory on `PATH`.
+fn on_path(exe: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(exe).is_file()))
+}
+
+/// `<root>/OpenSCAD*/openscad.exe` under the first root that has one. The folders are
+/// tried in sorted order, so the installer's `OpenSCAD` comes before longer names such as
+/// `OpenSCAD (Nightly)`, of which it is a prefix.
+fn installed_openscad(roots: &[PathBuf]) -> Option<PathBuf> {
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        let mut dirs: Vec<String> = entries
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("OpenSCAD"))
+            .collect();
+        dirs.sort();
+        if let Some(exe) = dirs
+            .iter()
+            .map(|name| root.join(name).join("openscad.exe"))
+            .find(|exe| exe.is_file())
+        {
+            return Some(exe);
+        }
+    }
+    None
+}
+
+/// The `openscad --version` line, or `None` if OpenSCAD was not found.
 fn openscad_version() -> Option<String> {
     // OpenSCAD prints its version to stderr.
-    let output = ProcCommand::new("openscad")
+    let output = ProcCommand::new(openscad_program())
         .arg("--version")
         .output()
         .ok()?;
@@ -997,11 +1057,17 @@ fn run_cmd(args: Vec<String>) -> Result<()> {
     // dependencies shadow globals. (OpenSCAD still searches its built-in user/install
     // dirs — the include-scan surfaces undeclared imports.)
     let openscadpath = env.openscad_path_value().context("assemble OPENSCADPATH")?;
-    let status = ProcCommand::new("openscad")
+    let program = openscad_program();
+    let status = ProcCommand::new(&program)
         .env("OPENSCADPATH", &openscadpath)
         .args(&args)
         .status()
-        .context("launch openscad (is it on PATH?)")?;
+        .with_context(|| {
+            format!(
+                "launch {} (looked in {OPENSCAD_SEARCH}; set OPENSCAD to its path)",
+                program.display()
+            )
+        })?;
     if !status.success() {
         bail!("openscad exited with {status}");
     }
@@ -1249,6 +1315,25 @@ mod tests {
 
     /// A well-formed `rev` for fixtures: `add` refuses anything shorter.
     const FULL_REV: &str = "061fef7c429628808e847696bb345a9b0ec6e279";
+
+    #[test]
+    fn installed_openscad_prefers_the_installers_folder() {
+        let root = tempfile::tempdir().unwrap();
+        for dir in ["OpenSCAD (Nightly)", "OpenSCAD", "Other"] {
+            std::fs::create_dir_all(root.path().join(dir)).unwrap();
+            std::fs::write(root.path().join(dir).join("openscad.exe"), "").unwrap();
+        }
+        assert_eq!(
+            installed_openscad(&[PathBuf::from("/nonexistent"), root.path().to_path_buf()]),
+            Some(root.path().join("OpenSCAD").join("openscad.exe"))
+        );
+        std::fs::remove_dir_all(root.path().join("OpenSCAD")).unwrap();
+        assert_eq!(
+            installed_openscad(&[root.path().to_path_buf()]),
+            Some(root.path().join("OpenSCAD (Nightly)").join("openscad.exe"))
+        );
+        assert_eq!(installed_openscad(&[root.path().join("Other")]), None);
+    }
 
     #[test]
     fn workspace_relative_uses_the_workspace_token() {

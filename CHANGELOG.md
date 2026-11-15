@@ -6,6 +6,14 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- **scadman finds OpenSCAD where its Windows installer puts it** (#133). The installer
+  doesn't add `C:\Program Files\OpenSCAD\` to `PATH`, so `doctor` said "not found" and
+  `run` failed on a default install. scadman now tries `$OPENSCAD` (set it to the
+  program's path, on any OS), then `PATH`, then on Windows `%ProgramFiles%\OpenSCAD*`.
+  `doctor` names the binary when it isn't the one on `PATH`.
+
 ### Fixed
 
 - **OpenSCAD 2021.01 crashed on Windows rendering through the environment** (#132).
