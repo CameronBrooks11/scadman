@@ -600,10 +600,9 @@ fn env_reports_path_and_json() {
         "env: {}",
         String::from_utf8_lossy(&env.stderr)
     );
+    // Compared as a path, so `\` separators on Windows match too.
     assert!(
-        String::from_utf8_lossy(&env.stdout)
-            .trim()
-            .ends_with(".scadman/env"),
+        Path::new(String::from_utf8_lossy(&env.stdout).trim()).ends_with(".scadman/env"),
         "env should print the OPENSCADPATH dir on stdout"
     );
 
@@ -1324,7 +1323,7 @@ fn path_dependency_with_root_and_on_path_exposes_the_subdir() {
     let env = scadman(&proj, store.path(), &["env"]);
     let path = String::from_utf8_lossy(&env.stdout);
     assert!(
-        path.contains(".scadman/env/srclib"),
+        std::env::split_paths(path.trim()).any(|p| p.ends_with(".scadman/env/srclib")),
         "on_path should add the lib dir to OPENSCADPATH: {path}"
     );
 }

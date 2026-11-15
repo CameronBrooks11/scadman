@@ -327,8 +327,10 @@ fn write_vscode_settings(openscadpath: &str) -> Result<()> {
 }
 
 /// Rewrite an `OPENSCADPATH` (absolute, under the current project) to use VS Code's
-/// `${workspaceFolder}` token, so the written settings are portable across checkouts. Paths
-/// outside the project (unusual) are left absolute.
+/// `${workspaceFolder}` token, so the written settings are portable across checkouts. The
+/// part after the token always uses `/`, which VS Code reads on every OS, so settings
+/// written on Windows work for a collaborator on Linux or macOS. Paths outside the project
+/// (unusual) are left absolute.
 fn workspace_relative(openscadpath: &str) -> String {
     let Ok(cwd) = std::env::current_dir() else {
         return openscadpath.to_string();
@@ -346,6 +348,11 @@ fn workspace_relative_to(openscadpath: &str, cwd: &str) -> String {
             // Only at a path-component boundary, so a sibling like `/a/proj-shared` is left
             // absolute when cwd is `/a/proj` (a raw prefix would mangle it).
             Some(rest) if rest.is_empty() || rest.starts_with(std::path::is_separator) => {
+                let rest = if cfg!(windows) {
+                    rest.replace('\\', "/")
+                } else {
+                    rest.to_string()
+                };
                 format!("${{workspaceFolder}}{rest}")
             }
             _ => p.to_string(),
