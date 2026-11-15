@@ -24,7 +24,7 @@ On macOS (use `x86_64-apple-darwin` on an Intel Mac):
 ```sh
 shasum -a 256 --ignore-missing -c checksums.txt
 tar -xzf scadman-*-aarch64-apple-darwin.tar.gz
-xattr -d com.apple.quarantine scadman 2>/dev/null   # the binary is not notarized
+xattr -d com.apple.quarantine scadman 2>/dev/null || true   # the binary is not notarized
 mkdir -p ~/.local/bin && install -m755 scadman ~/.local/bin/scadman   # or anywhere on your PATH
 ```
 
