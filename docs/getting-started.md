@@ -62,6 +62,19 @@ set it to the program's path, then `PATH`, and on Windows the installer's folder
 `%ProgramFiles%`, which it does not add to `PATH`. `scadman doctor` reports what it
 finds.
 
+### In GitHub Actions
+
+```yaml
+- uses: CameronBrooks11/scadman/setup@v0.1.0-alpha.7
+  with:
+    sync: "true"
+```
+
+The action installs the release it is used at, checked against that release's
+`checksums.txt`, on Linux, macOS or Windows runners, and puts `scadman` on `PATH`. With
+`sync: "true"` it also syncs the project (`working-directory`, default `.`) and exports
+`OPENSCADPATH` for the steps after it. Pass `version:` to install another release.
+
 ## A first project
 
 In your project directory:
