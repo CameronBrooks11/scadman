@@ -7,6 +7,123 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
+/// A temporary `XDG_DATA_HOME` for scadman's store. Stored libraries are write-protected,
+/// which on Unix a temporary directory cannot delete, so dropping this lifts that first.
+struct StoreHome(TempDir);
+
+impl StoreHome {
+    fn new() -> Self {
+        Self(TempDir::new().unwrap())
+    }
+
+    fn path(&self) -> &Path {
+        self.0.path()
+    }
+
+    /// Where the library with content hash `hash` is stored.
+    fn entry(&self, hash: &str) -> PathBuf {
+        self.path().join("scadman").join("store").join(hash)
+    }
+}
+
+impl Drop for StoreHome {
+    fn drop(&mut self) {
+        set_writable(self.path(), true);
+    }
+}
+
+/// Give or take write permission on everything under `dir`: what scadman's protection
+/// takes away, and what someone changing a stored library by hand would give back.
+fn set_writable(dir: &Path, writable: bool) {
+    let set = |path: &Path| {
+        let Ok(meta) = fs::metadata(path) else { return };
+        let mut permissions = meta.permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = permissions.mode();
+            permissions.set_mode(if writable {
+                mode | 0o200
+            } else {
+                mode & !0o222
+            });
+        }
+        #[cfg(not(unix))]
+        permissions.set_readonly(!writable);
+        fs::set_permissions(path, permissions).ok();
+    };
+    // A directory has to be writable before its entries can be listed and changed back,
+    // and is protected only after them. Off Unix only files carry the protection.
+    if cfg!(unix) && writable {
+        set(dir);
+    }
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            set_writable(&entry.path(), writable);
+        } else if file_type.is_file() {
+            set(&entry.path());
+        }
+    }
+    if cfg!(unix) && !writable {
+        set(dir);
+    }
+}
+
+/// The content hash `scadman.lock` in `proj` records for its (single) package.
+fn locked_hash(proj: &Path) -> String {
+    let lock = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    let line = lock
+        .lines()
+        .find(|l| l.starts_with("hash = "))
+        .expect("a locked package");
+    line.split('"').nth(1).unwrap().to_string()
+}
+
+/// The line of a `doctor` report starting with `label`.
+fn doctor_line(proj: &Path, store: &StoreHome, label: &str) -> String {
+    let out = scadman(proj, store.path(), &["doctor"]);
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find(|l| l.starts_with(label))
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// A project depending on `make_lib`'s library at its commit, locked and synced. Returns
+/// the project, the library's remote, and where the library is stored.
+fn synced_project(root: &Path, store: &StoreHome) -> (PathBuf, PathBuf, PathBuf) {
+    let (lib, rev) = make_lib(root);
+    let proj = project_with(
+        root,
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\n",
+            file_url(&lib)
+        ),
+    );
+    for cmd in ["lock", "sync"] {
+        let out = scadman(&proj, store.path(), &[cmd]);
+        assert!(
+            out.status.success(),
+            "{cmd}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let entry = store.entry(&locked_hash(&proj));
+    (proj, lib, entry)
+}
+
+/// Change a stored library the two ways the report had: edit a file, and leave a new
+/// directory beside it, as Python does with `__pycache__`.
+fn modify_stored(entry: &Path) {
+    set_writable(entry, true);
+    fs::write(entry.join("greet.scad"), "module greet() { sphere(9); }\n").unwrap();
+    fs::create_dir_all(entry.join("__pycache__")).unwrap();
+    fs::write(entry.join("__pycache__").join("tool.pyc"), "bytecode").unwrap();
+}
+
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
         .arg("-C")
@@ -84,7 +201,7 @@ fn project_with(root: &Path, toml: &str) -> PathBuf {
 #[test]
 fn lock_then_sync_end_to_end() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     let proj = project_with(
         root.path(),
@@ -125,7 +242,7 @@ fn lock_then_sync_end_to_end() {
 /// `gitconfig` for scadman's git if given; return the lockfile and the stored file.
 fn lock_with_gitconfig(lib: &Path, rev: &str, gitconfig: Option<&Path>) -> (String, String) {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let proj = project_with(
         root.path(),
         &format!(
@@ -203,7 +320,7 @@ fn a_users_line_ending_config_does_not_change_the_lock() {
 #[test]
 fn sync_rejects_a_lockfile_with_a_wrong_hash() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     let source = file_url(&lib);
     let proj = project_with(
@@ -240,7 +357,7 @@ fn a_lockfile_hash_that_is_a_path_is_refused() {
     // directory on the machine: sync linked it into the environment and put it on
     // OPENSCADPATH.
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     let source = file_url(&lib);
     let victim = root.path().join("victim");
@@ -283,7 +400,7 @@ fn lock_rejects_a_bad_library_root_on_a_git_dependency() {
     // into scadman.lock, and fail only at sync — the misspelled case with "not in the
     // store — run a sync".
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     let proj = root.path().join("proj");
     fs::create_dir_all(&proj).unwrap();
@@ -321,7 +438,7 @@ fn an_abbreviated_rev_is_refused_with_a_clear_message() {
     // it failed with git's "couldn't find remote ref". Meanwhile `add` accepted it and
     // `sync` prefix-matched it against the lock as if it were supported.
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     let url = file_url(&lib);
     let short = &rev[..7];
@@ -388,7 +505,7 @@ fn an_abbreviated_rev_is_refused_with_a_clear_message() {
 #[test]
 fn sync_rejects_a_stale_lockfile() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     let source = file_url(&lib);
     let proj = project_with(
@@ -417,11 +534,187 @@ fn sync_rejects_a_stale_lockfile() {
 }
 
 #[test]
+fn a_write_through_the_environment_cannot_reach_the_store() {
+    // Every project links to the same stored copy. A write through one project's
+    // `.scadman/env` used to land in it: an edit, or Python leaving `__pycache__` beside a
+    // library's scripts when they ran from the library folder.
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _lib, entry) = synced_project(root.path(), &store);
+    let through_env = proj.join(".scadman").join("env").join("mylib");
+
+    assert!(
+        fs::write(through_env.join("greet.scad"), "changed").is_err(),
+        "editing a library's file through the environment must fail"
+    );
+    // On Windows the environment's directories are its own (only the files are shared
+    // with the store), so a new file there never reaches the store.
+    #[cfg(unix)]
+    assert!(
+        fs::create_dir(through_env.join("__pycache__")).is_err(),
+        "nothing may be added beside a library's files"
+    );
+    assert_eq!(fs::read_to_string(entry.join("greet.scad")).unwrap(), GREET);
+    assert!(!entry.join("__pycache__").exists());
+    assert!(
+        doctor_line(&proj, &store, "content:").contains("unmodified"),
+        "{}",
+        doctor_line(&proj, &store, "content:")
+    );
+    // The environment can still be rebuilt over the protected copy.
+    assert!(scadman(&proj, store.path(), &["sync"]).status.success());
+}
+
+#[test]
+fn sync_restores_a_library_modified_in_the_store() {
+    // Before, `sync` exited 0 over a modified copy and `doctor` reported nothing.
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _lib, entry) = synced_project(root.path(), &store);
+    modify_stored(&entry);
+
+    let line = doctor_line(&proj, &store, "content:");
+    assert!(
+        line.contains("`mylib`") && line.contains("modified") && line.contains("sync --verify"),
+        "doctor should name the library and the fix: {line}"
+    );
+
+    // The copy lost its write protection when it was changed, which is what makes a
+    // plain sync look at it again.
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    assert!(
+        sync.status.success(),
+        "sync: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    let err = String::from_utf8_lossy(&sync.stderr);
+    assert!(
+        err.contains("`mylib`")
+            && err.contains("modified in the store")
+            && err.contains("restored"),
+        "sync should say what it found and did: {err}"
+    );
+    assert_eq!(fs::read_to_string(entry.join("greet.scad")).unwrap(), GREET);
+    assert!(!entry.join("__pycache__").exists());
+    assert!(doctor_line(&proj, &store, "content:").contains("unmodified"));
+    assert!(
+        fs::write(entry.join("greet.scad"), "again").is_err(),
+        "the restored copy is protected"
+    );
+
+    // Nothing more to say the second time.
+    let again = scadman(&proj, store.path(), &["sync"]);
+    assert!(!String::from_utf8_lossy(&again.stderr).contains("modified"));
+}
+
+#[test]
+fn sync_verify_finds_a_modified_copy_that_is_protected_again() {
+    // A plain sync re-hashes only a copy that is writable. One changed and then
+    // protected again takes `--verify`, which re-hashes everything.
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _lib, entry) = synced_project(root.path(), &store);
+    modify_stored(&entry);
+    set_writable(&entry, false);
+
+    let plain = scadman(&proj, store.path(), &["sync"]);
+    assert!(plain.status.success());
+    assert!(
+        !String::from_utf8_lossy(&plain.stderr).contains("modified"),
+        "a plain sync does not re-hash a protected copy"
+    );
+    assert!(doctor_line(&proj, &store, "content:").contains("modified"));
+
+    let verify = scadman(&proj, store.path(), &["sync", "--verify"]);
+    assert!(
+        verify.status.success(),
+        "sync --verify: {}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    assert!(String::from_utf8_lossy(&verify.stderr).contains("restored"));
+    assert_eq!(fs::read_to_string(entry.join("greet.scad")).unwrap(), GREET);
+    assert!(!entry.join("__pycache__").exists());
+}
+
+#[test]
+fn sync_protects_an_intact_copy_stored_without_protection() {
+    // A store filled by a scadman from before copies were protected: the first sync
+    // re-hashes each copy, finds it intact, and protects it without comment.
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _lib, entry) = synced_project(root.path(), &store);
+    set_writable(&entry, true);
+
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    assert!(sync.status.success());
+    assert!(
+        !String::from_utf8_lossy(&sync.stderr).contains("warning"),
+        "an intact copy is no cause for a warning: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    assert!(
+        fs::write(entry.join("greet.scad"), "changed").is_err(),
+        "the copy is protected from then on"
+    );
+}
+
+#[test]
+fn a_modified_copy_is_left_in_place_when_it_cannot_be_restored() {
+    // With the remote unreachable there is nothing to restore from. Sync must fail and
+    // say why, not delete the copy other projects are linked to.
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, lib, entry) = synced_project(root.path(), &store);
+    modify_stored(&entry);
+    fs::remove_dir_all(&lib).unwrap();
+
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    assert!(!sync.status.success(), "sync must not accept the copy");
+    let err = String::from_utf8_lossy(&sync.stderr);
+    assert!(
+        err.contains("`mylib`") && err.contains("modified in the store"),
+        "should say the copy was modified: {err}"
+    );
+    assert!(entry.join("greet.scad").exists(), "the copy stays");
+}
+
+#[test]
+fn locking_in_another_project_does_not_hand_out_a_modified_copy() {
+    // A second project locking the same commit fetched the right content, computed the
+    // right hash, and was then given the modified copy already stored under it.
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _lib, entry) = synced_project(root.path(), &store);
+    modify_stored(&entry);
+
+    let other = root.path().join("other");
+    fs::create_dir_all(&other).unwrap();
+    fs::copy(proj.join("scadman.toml"), other.join("scadman.toml")).unwrap();
+    let lock = scadman(&other, store.path(), &["lock"]);
+    assert!(
+        lock.status.success(),
+        "lock: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    let err = String::from_utf8_lossy(&lock.stderr);
+    assert!(
+        err.contains("`mylib`") && err.contains("restored"),
+        "lock should say it replaced a modified copy: {err}"
+    );
+    assert!(scadman(&other, store.path(), &["sync"]).status.success());
+    assert_eq!(
+        fs::read_to_string(other.join(".scadman/env/mylib/greet.scad")).unwrap(),
+        GREET
+    );
+    assert_eq!(locked_hash(&other), locked_hash(&proj));
+}
+
+#[test]
 fn sync_refuses_a_lockfile_holding_a_removed_dependency() {
     // After `remove`, the library stayed locked: sync kept exposing it, so the project's
     // own import of it kept rendering, and doctor called the lockfile up to date.
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     let proj = project_with(
         root.path(),
@@ -479,7 +772,7 @@ fn sync_refuses_a_lockfile_holding_a_removed_dependency() {
 #[test]
 fn init_scaffolds_gitignore() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let proj = root.path().join("p");
     fs::create_dir_all(&proj).unwrap();
 
@@ -498,7 +791,7 @@ fn init_scaffolds_gitignore() {
 #[test]
 fn add_remove_and_list() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let proj = root.path().join("p");
     fs::create_dir_all(&proj).unwrap();
     assert!(
@@ -549,7 +842,7 @@ fn add_remove_and_list() {
 #[test]
 fn add_with_a_url_as_the_name_points_at_the_argument_order() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let proj = root.path().join("p");
     fs::create_dir_all(&proj).unwrap();
     assert!(
@@ -584,7 +877,7 @@ fn add_with_a_url_as_the_name_points_at_the_argument_order() {
 #[test]
 fn env_reports_path_and_json() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     let proj = project_with(
         root.path(),
@@ -622,7 +915,7 @@ fn env_reports_path_and_json() {
 #[ignore = "needs network + openscad; real-ecosystem validation"]
 fn bosl2_renders_end_to_end() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let proj = project_with(
         root.path(),
         "[project]\nname = \"v\"\n\n[dependencies]\nBOSL2 = { git = \"https://github.com/BelfrySCAD/BOSL2\", rev = \"afe82db884ee4409aa76ecfcfbbf54d446964af1\" }\n",
@@ -657,7 +950,7 @@ fn bosl2_renders_end_to_end() {
 #[ignore = "needs network + openscad; real-ecosystem validation"]
 fn dotscad_renders_with_root_and_on_path() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let proj = project_with(
         root.path(),
         "[project]\nname = \"v\"\n\n[dependencies.dotSCAD]\ngit = \"https://github.com/JustinSDK/dotSCAD\"\nrev = \"bb33edfd75cba0edbb7971606a077b9c69d0b7d2\"\nroot = \"src\"\non_path = true\n",
@@ -702,7 +995,7 @@ fn manifest_line(text: &str) -> &str {
 #[test]
 fn doctor_distinguishes_a_broken_manifest_from_a_missing_one() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
 
     // A manifest that exists but does not parse. Diagnosing exactly this is
     // doctor's job, and reporting it as "not found" sends the user to
@@ -747,7 +1040,7 @@ fn every_command_refuses_a_lockfile_of_an_unknown_version() {
     // Only sync/run/env used to check the version. graph, list and doctor read a newer
     // lockfile without comment, and `update <name>` rewrote it in the old format.
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, _) = make_lib(root.path());
     let branch = branch_of(&lib);
     let proj = project_with(
@@ -808,7 +1101,7 @@ fn a_newer_lockfile_that_does_not_parse_is_reported_by_version() {
     // A later format may not fit today's shape at all. The version is still readable,
     // and "upgrade scadman" is more use than a parse error about a field.
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let proj = project_with(root.path(), "[project]\nname = \"demo\"\n");
     fs::write(
         proj.join("scadman.lock"),
@@ -826,7 +1119,7 @@ fn lock_replaces_a_lockfile_that_is_not_a_lockfile() {
     // Refusing to overwrite is for a lockfile from a newer scadman. A file with no
     // readable version is just broken, and regenerating it is the fix.
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let proj = project_with(root.path(), "[project]\nname = \"demo\"\n");
     fs::write(proj.join("scadman.lock"), "this is not toml = = =\n").unwrap();
     let out = scadman(&proj, store.path(), &["lock"]);
@@ -845,7 +1138,7 @@ fn lock_replaces_a_lockfile_that_is_not_a_lockfile() {
 #[test]
 fn lock_rejects_a_git_dependency_with_two_refs() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     git(&lib, &["tag", "v1"]);
     let proj = project_with(
@@ -872,7 +1165,7 @@ fn lock_rejects_a_git_dependency_with_two_refs() {
 #[test]
 fn a_misspelled_dependencies_table_is_an_error_not_an_empty_project() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let proj = project_with(
         root.path(),
         "[project]\nname = \"d\"\n\n[dependancies]\nmylib = { git = \"file:///x\", tag = \"v1\" }\n",
@@ -908,7 +1201,7 @@ fn a_misspelled_dependencies_table_is_an_error_not_an_empty_project() {
 #[test]
 fn doctor_reports_setup() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     let proj = project_with(
         root.path(),
@@ -932,7 +1225,7 @@ fn doctor_reports_setup() {
 #[test]
 fn env_write_vscode_merges_settings() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     let proj = project_with(
         root.path(),
@@ -972,7 +1265,7 @@ fn env_write_vscode_merges_settings() {
 #[test]
 fn graph_prints_tree_and_json() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     let proj = project_with(
         root.path(),
@@ -1000,7 +1293,7 @@ fn graph_prints_tree_and_json() {
 #[test]
 fn graph_without_lock_nudges() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let proj = project_with(root.path(), "[project]\nname = \"demo\"\n");
     let out = scadman(&proj, store.path(), &["graph"]);
     assert!(
@@ -1016,7 +1309,7 @@ fn graph_without_lock_nudges() {
 #[test]
 fn path_dependency_syncs_and_picks_up_edits() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
 
     // A plain local sibling library (no git).
     let lib = root.path().join("lib");
@@ -1076,7 +1369,7 @@ fn a_failed_store_insert_leaves_no_staging_directory() {
     // process; `ulimit -f` counts 512- or 1024-byte blocks depending on the shell, and
     // either way 512 blocks is far below the 4 MiB file.
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let lib = root.path().join("sib");
     fs::create_dir_all(&lib).unwrap();
     fs::write(lib.join("s.scad"), "// s\n").unwrap();
@@ -1133,7 +1426,7 @@ fn a_failed_store_insert_leaves_no_staging_directory() {
 #[test]
 fn add_path_then_lock_end_to_end() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let lib = root.path().join("sib");
     fs::create_dir_all(&lib).unwrap();
     fs::write(lib.join("x.scad"), "// x\n").unwrap();
@@ -1156,7 +1449,7 @@ fn add_path_then_lock_end_to_end() {
 #[test]
 fn missing_path_dependency_errors_clearly() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let proj = project_with(
         root.path(),
         "[project]\nname = \"app\"\n\n[dependencies]\ngone = { path = \"../nope\" }\n",
@@ -1174,7 +1467,7 @@ fn path_dep_does_not_force_refetch_of_git_deps() {
     // from the store at their locked rev, NOT re-fetched — so sync keeps working offline and
     // branch/tag deps don't silently move. Proven by deleting the git remote after locking.
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (gitlib, rev) = make_lib(root.path()); // a git "remote" at <root>/mylib
 
     let sib = root.path().join("sib");
@@ -1221,7 +1514,7 @@ fn a_hex_named_tag_is_held_at_its_locked_commit_beside_a_path_dep() {
     // a path dep re-fetched it: the lock moved when the tag moved, and sync needed the
     // network. It must behave like any other tag.
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (gitlib, _) = make_lib(root.path());
     git(&gitlib, &["tag", "20210101"]);
 
@@ -1270,7 +1563,7 @@ fn changing_a_git_pin_still_nudges_even_with_a_path_dep() {
     // A path dep auto-refreshes, but it must NOT disable the staleness nudge for a git dep
     // beside it: editing the git pin in the manifest requires an explicit `scadman lock`.
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (gitlib, rev) = make_lib(root.path());
     let sib = root.path().join("sib");
     fs::create_dir_all(&sib).unwrap();
@@ -1303,7 +1596,7 @@ fn changing_a_git_pin_still_nudges_even_with_a_path_dep() {
 #[test]
 fn path_dependency_with_root_and_on_path_exposes_the_subdir() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     // A src-layout sibling: code under src/.
     let lib = root.path().join("srclib");
     fs::create_dir_all(lib.join("src")).unwrap();
@@ -1333,7 +1626,7 @@ fn sync_does_not_warn_about_an_import_an_on_path_library_provides() {
     // Library A imports `<util/x.scad>`, which resolves through on_path library `dot`.
     // sync used to warn that A imports `util/`, a library that does not exist.
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let dot = root.path().join("dot");
     fs::create_dir_all(dot.join("util")).unwrap();
     fs::write(
@@ -1383,7 +1676,7 @@ fn sync_does_not_warn_about_an_import_an_on_path_library_provides() {
 #[test]
 fn add_path_rejects_a_conflicting_ref_flag() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let proj = project_with(root.path(), "[project]\nname = \"app\"\n");
     let out = scadman(
         &proj,
@@ -1431,7 +1724,7 @@ fn branch_of(dir: &Path) -> String {
 #[test]
 fn update_advances_a_branch_dependency() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev_a) = make_lib(root.path());
     let branch = branch_of(&lib);
     let proj = project_with(
@@ -1468,7 +1761,7 @@ fn update_advances_a_branch_dependency() {
 #[test]
 fn update_leaves_a_rev_pin_untouched() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     let proj = project_with(
         root.path(),
@@ -1494,7 +1787,7 @@ fn update_leaves_a_rev_pin_untouched() {
 #[test]
 fn update_scopes_to_named_dependencies() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib_a, _) = make_lib(root.path());
     // A second library dir with its own git repo.
     let lib_b = root.path().join("libb");
@@ -1538,7 +1831,7 @@ fn update_scopes_to_named_dependencies() {
 #[test]
 fn update_rejects_a_path_dependency_name() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let sib = root.path().join("sib");
     fs::create_dir_all(&sib).unwrap();
     fs::write(sib.join("s.scad"), "// s\n").unwrap();
@@ -1560,7 +1853,7 @@ fn full_update_advances_a_transitive_branch_dep() {
     // Regression: `scadman update` (no names) must advance transitive branch/tag deps too,
     // matching `scadman lock` — not hold them at their locked rev.
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
 
     // Leaf lib B (transitive), on a branch.
     let libb = root.path().join("b");
@@ -1612,7 +1905,7 @@ fn full_update_advances_a_transitive_branch_dep() {
 #[test]
 fn doctor_notes_branch_tracking_only_when_present() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     let branch = branch_of(&lib);
 
@@ -1648,7 +1941,7 @@ fn doctor_notes_branch_tracking_only_when_present() {
 #[test]
 fn update_with_no_prior_lock_reports_added() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     let proj = project_with(
         root.path(),
@@ -1673,7 +1966,7 @@ fn update_with_no_prior_lock_reports_added() {
 #[test]
 fn update_reports_a_removed_dependency() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, rev) = make_lib(root.path());
     let src = file_url(&lib);
     let proj = project_with(
@@ -1697,7 +1990,7 @@ fn update_reports_a_removed_dependency() {
 #[test]
 fn update_unknown_dependency_errors() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let proj = project_with(root.path(), "[project]\nname = \"app\"\n");
     let out = scadman(&proj, store.path(), &["update", "ghost"]);
     assert!(!out.status.success());
@@ -1713,7 +2006,7 @@ fn add_without_a_ref_tracks_the_default_branch() {
     // A newcomer's `scadman add <name> <url>` with no ref should just work: track the
     // remote's default branch (like `git clone`), then lock to a commit.
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let (lib, _rev) = make_lib(root.path());
     let branch = branch_of(&lib);
     let proj = root.path().join("proj");
@@ -1747,7 +2040,7 @@ fn add_without_a_ref_tracks_the_default_branch() {
 #[test]
 fn doctor_reports_an_openscad_requirement() {
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     let proj = project_with(
         root.path(),
         "[project]\nname = \"app\"\nopenscad = \"2099.01\"\n",
@@ -1774,7 +2067,7 @@ fn doctor_reports_an_openscad_requirement() {
 fn openscad_env_names_the_binary_for_doctor_and_run() {
     use std::os::unix::fs::PermissionsExt;
     let root = TempDir::new().unwrap();
-    let store = TempDir::new().unwrap();
+    let store = StoreHome::new();
     // A stand-in OpenSCAD, off PATH: it reports a version and records its arguments.
     let fake = root.path().join("my-openscad");
     fs::write(

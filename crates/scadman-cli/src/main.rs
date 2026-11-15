@@ -80,7 +80,13 @@ enum Command {
         names: Vec<String>,
     },
     /// Materialize the project environment from the lockfile (resolving if needed).
-    Sync,
+    Sync {
+        /// Re-hash every locked library in the store, and restore any that no longer
+        /// matches its locked hash. Without this, only a library whose stored copy has
+        /// lost its write protection is re-hashed.
+        #[arg(long)]
+        verify: bool,
+    },
     /// Print the project's OPENSCADPATH (point your editor/OpenSCAD at it).
     Env {
         /// Emit a machine-readable JSON report instead of the path.
@@ -123,7 +129,7 @@ fn main() -> Result<()> {
         Command::List => list_cmd(),
         Command::Lock => lock_cmd(),
         Command::Update { names } => update_cmd(names),
-        Command::Sync => sync_cmd().map(|_| ()),
+        Command::Sync { verify } => sync_cmd(verify).map(|_| ()),
         Command::Env { json, write_vscode } => env_cmd(json, write_vscode),
         Command::Doctor => doctor_cmd(),
         Command::Graph { json } => graph_cmd(json),
@@ -239,7 +245,7 @@ fn short(rev: &str) -> &str {
 
 fn env_cmd(json: bool, write_vscode: bool) -> Result<()> {
     let store = open_store()?;
-    let (lock, env) = prepare_environment(&store)?;
+    let (lock, env) = prepare_environment(&store, false)?;
     let openscadpath = env
         .openscad_path_value()
         .context("assemble OPENSCADPATH")?
@@ -444,7 +450,11 @@ fn doctor_cmd() -> Result<()> {
             };
             println!("requires:     {line}");
         }
-        report_lockfile(m);
+        if let Some(lock) = report_lockfile(m)
+            && let Some(root) = Store::default_root()
+        {
+            report_content(&lock, &Store::new(root));
+        }
         let tracking = m
             .dependencies
             .values()
@@ -480,19 +490,20 @@ fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
     if n == 1 { one } else { many }
 }
 
-fn report_lockfile(manifest: &Manifest) {
+/// Print the `lockfile:` line, and hand back the lockfile if it could be read.
+fn report_lockfile(manifest: &Manifest) -> Option<Lockfile> {
     if !Path::new(lockfile::LOCKFILE_FILE).exists() {
         println!("lockfile:     not created — run `scadman lock`");
-        return;
+        return None;
     }
     let text = fs::read_to_string(lockfile::LOCKFILE_FILE).ok();
     if let Some(Err(e)) = text.as_deref().map(check_lockfile_version) {
         println!("lockfile:     {e}");
-        return;
+        return None;
     }
     let lock = text.and_then(|t| Lockfile::from_toml(&t).ok());
-    match lock {
-        Some(lock) => match lock_staleness(manifest, &lock) {
+    match &lock {
+        Some(lock) => match lock_staleness(manifest, lock) {
             Some(reason) => {
                 println!("lockfile:     out of date ({reason}) — run `scadman lock`")
             }
@@ -506,6 +517,37 @@ fn report_lockfile(manifest: &Manifest) {
             }
         },
         None => println!("lockfile:     present but unreadable"),
+    }
+    lock
+}
+
+/// Print the `content:` line: whether each locked library's copy in the store still
+/// hashes to what the lockfile pins. Says nothing when none of them is in the store yet.
+fn report_content(lock: &Lockfile, store: &Store) {
+    let mut checked = 0;
+    let mut modified = Vec::new();
+    for package in &lock.packages {
+        // The hash becomes a path, and this lockfile has not been through `parse_lockfile`.
+        if validate_content_hash(&package.hash).is_err() || !store.path_for(&package.hash).exists()
+        {
+            continue;
+        }
+        checked += 1;
+        if !store.verify(&package.hash).unwrap_or(false) {
+            modified.push(format!("`{}`", package.name));
+        }
+    }
+    if !modified.is_empty() {
+        println!(
+            "content:      {} modified in the store — run `scadman sync --verify` to restore",
+            modified.join(", ")
+        );
+    } else if checked > 0 {
+        let total = lock.packages.len();
+        println!(
+            "content:      {checked} of {total} locked {} in the store, unmodified",
+            plural(total, "package", "packages")
+        );
     }
 }
 
@@ -938,9 +980,11 @@ fn update_cmd(names: Vec<String>) -> Result<()> {
         }
         let base_lock = previous.clone().unwrap_or_else(Lockfile::new);
         let fetcher = CachedGitFetcher::new(&store, &base_lock, refresh);
-        resolve(&manifest, &base, &fetcher)
+        let lock = resolve(&manifest, &base, &fetcher)
             .map_err(|e| anyhow::anyhow!("{e}"))?
-            .to_lockfile()
+            .to_lockfile();
+        warn_restored_by(&fetcher.inner, &lock);
+        lock
     };
 
     write_lock(&updated)?;
@@ -995,9 +1039,9 @@ fn report_update(previous: Option<&Lockfile>, updated: &Lockfile) {
 /// Resolve-or-read the lock, ensure content is stored, build the environment, and warn
 /// about undeclared imports (to stderr). Prints nothing to stdout, so `env` can emit only
 /// its report.
-fn prepare_environment(store: &Store) -> Result<(Lockfile, Environment)> {
+fn prepare_environment(store: &Store, verify: bool) -> Result<(Lockfile, Environment)> {
     let lock = read_or_lock(store)?;
-    ensure_stored(&lock, store)?;
+    ensure_stored(&lock, store, verify)?;
     let env = build_environment(&lock, store, &env_root()?).context("build environment")?;
     warn_unmet_imports(&lock, &env);
     warn_on_path_collisions(&env);
@@ -1037,9 +1081,9 @@ fn warn_on_path_collisions(env: &Environment) {
     }
 }
 
-fn sync_cmd() -> Result<Environment> {
+fn sync_cmd(verify: bool) -> Result<Environment> {
     let store = open_store()?;
-    let (_, env) = prepare_environment(&store)?;
+    let (_, env) = prepare_environment(&store, verify)?;
     let n = env.exposed.len();
     println!(
         "Synced {n} {} → {}",
@@ -1052,7 +1096,7 @@ fn sync_cmd() -> Result<Environment> {
 fn run_cmd(args: Vec<String>) -> Result<()> {
     let store = open_store()?;
     warn_openscad_too_old();
-    let (_, env) = prepare_environment(&store)?;
+    let (_, env) = prepare_environment(&store, false)?;
     // Point OPENSCADPATH at the project env (plus any on_path library roots) so declared
     // dependencies shadow globals. (OpenSCAD still searches its built-in user/install
     // dirs — the include-scan surfaces undeclared imports.)
@@ -1114,7 +1158,9 @@ fn resolve_lock(manifest: &Manifest, store: &Store) -> Result<Lockfile> {
     let fetcher = GitFetcher::new(store.clone());
     let base = std::env::current_dir().context("determine project directory")?;
     let resolved = resolve(manifest, &base, &fetcher).map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(resolved.to_lockfile())
+    let lock = resolved.to_lockfile();
+    warn_restored_by(&fetcher, &lock);
+    Ok(lock)
 }
 
 /// Whether the manifest has any path dependency (their content is mutable, so a lockfile
@@ -1227,6 +1273,7 @@ fn read_or_lock(store: &Store) -> Result<Lockfile> {
             let refreshed = resolve(&manifest, &base, &fetcher)
                 .map_err(|e| anyhow::anyhow!("{e}"))?
                 .to_lockfile();
+            warn_restored_by(&fetcher.inner, &refreshed);
             if refreshed != lock {
                 write_lock(&refreshed)?;
             }
@@ -1252,24 +1299,53 @@ fn write_lock(lock: &Lockfile) -> Result<()> {
         .with_context(|| format!("write {}", lockfile::LOCKFILE_FILE))
 }
 
-/// Ensure every locked package's content is present in the store, fetching any that are
-/// missing (a fresh checkout) and verifying it hashes to the pinned value.
-fn ensure_stored(lock: &Lockfile, store: &Store) -> Result<()> {
+/// Ensure every locked package's content is in the store and is what the lockfile pins:
+/// fetch what is missing (a fresh checkout), and replace what was modified.
+///
+/// A stored copy is write-protected once it is known to match its hash, so one that still
+/// is has had no chance to change and is taken as it stands. One that is not — stored by a
+/// scadman from before copies were protected, or with the protection since lifted — is
+/// re-hashed, and so is every copy when `verify` is set.
+fn ensure_stored(lock: &Lockfile, store: &Store, verify: bool) -> Result<()> {
     for package in &lock.packages {
+        let mut modified = false;
         if store.path_for(&package.hash).exists() {
-            continue;
+            let inspect = || -> io::Result<bool> {
+                if !verify && store.is_protected(&package.hash)? {
+                    return Ok(true);
+                }
+                store.verify(&package.hash)
+            };
+            if inspect().with_context(|| format!("check `{}` in the store", package.name))? {
+                // Best effort: where a file system cannot hold the protection, the copy
+                // is simply re-hashed next time.
+                store.protect(&package.hash).ok();
+                continue;
+            }
+            modified = true;
         }
         // A path dependency has no remote to re-fetch from; its content is inserted at lock
         // time. If it is missing here (e.g. a store cleared out from under a committed lock),
         // re-locking re-reads the local directory — don't try to git-fetch a `path:` source.
         if package.source.starts_with(lockfile::PATH_SOURCE_PREFIX) {
             bail!(
-                "path dependency `{}` content is not in the store — run `scadman lock`",
-                package.name
+                "path dependency `{}` content is {} the store — run `scadman lock`",
+                package.name,
+                if modified { "modified in" } else { "not in" }
             );
         }
-        let acquired = fetch_git(store, &package.source, &package.rev)
-            .with_context(|| format!("fetch {} @ {}", package.name, package.rev))?;
+        // Fetching replaces a modified copy only once the right content is in hand, so a
+        // failure here (no network, say) leaves it where it was.
+        let acquired = fetch_git(store, &package.source, &package.rev).with_context(|| {
+            if modified {
+                format!(
+                    "`{}` was modified in the store, and fetching {} to restore it failed",
+                    package.name, package.rev
+                )
+            } else {
+                format!("fetch {} @ {}", package.name, package.rev)
+            }
+        })?;
         if acquired.entry.hash != package.hash {
             bail!(
                 "integrity: {} @ {} hashed to {} but the lockfile expects {}",
@@ -1279,8 +1355,30 @@ fn ensure_stored(lock: &Lockfile, store: &Store) -> Result<()> {
                 package.hash
             );
         }
+        if modified {
+            warn_restored(&package.name, &package.hash);
+        }
     }
     Ok(())
+}
+
+/// Say that a stored copy had been changed and was put back. It was served in that state
+/// until now, so anything rendered from it is worth a second look.
+fn warn_restored(name: &str, hash: &str) {
+    eprintln!(
+        "warning: `{name}` had been modified in the store ({}); restored it to the locked content",
+        short(hash)
+    );
+}
+
+/// [`warn_restored`] for the copies a resolve replaced, named from the lock it produced.
+fn warn_restored_by(fetcher: &GitFetcher, lock: &Lockfile) {
+    for hash in fetcher.take_restored() {
+        // What a resolve fetched is in the lock it produced, so the name is there.
+        if let Some(package) = lock.packages.iter().find(|p| p.hash == hash) {
+            warn_restored(&package.name, &hash);
+        }
+    }
 }
 
 fn warn_unmet_imports(lock: &Lockfile, env: &Environment) {

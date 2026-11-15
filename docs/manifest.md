@@ -130,11 +130,39 @@ One edit is not detected: a changed `tag` or `branch` name on an unchanged URL. 
 | `scadman.toml` | The manifest. | yes |
 | `scadman.lock` | The lockfile. | yes |
 | `.scadman/env/` | The project environment: one entry per library: a symlink, or on Windows a tree of hard links to the stored files (copies where a hard link can't be made), rebuilt on every `sync`. | no (`init` ignores it) |
-| `$XDG_DATA_HOME/scadman/store/`, or else `~/.local/share/scadman/store/` (Linux, macOS) or `%LOCALAPPDATA%\scadman\store\` (Windows) | The store: one immutable directory per content hash, shared by all projects. | not in the project |
+| `$XDG_DATA_HOME/scadman/store/`, or else `~/.local/share/scadman/store/` (Linux, macOS) or `%LOCALAPPDATA%\scadman\store\` (Windows) | The store: one read-only directory per content hash, shared by all projects. | not in the project |
 
 A library's stored copy is its working tree without `.git`. Symbolic links inside a
 library are not copied. File modes do not affect the hash.
 
+### Stored libraries are read-only
+
+Every project on the machine that locks a library at the same content shares one stored
+copy, and `.scadman/env/` leads straight to it. So scadman takes write permission off a
+copy before it is used: its files everywhere, and on Linux and macOS its directories
+too. Editing a library's file through `.scadman/env/` fails, and a tool run from a
+library's folder cannot leave files there. Python, for one, then skips writing
+`__pycache__` and carries on.
+
+To change a library, depend on your own copy by path
+([path-dependencies.md](path-dependencies.md)), or fork it and depend on the fork.
+
+A copy that is still write-protected has had no chance to change, so `sync`, `run` and
+`env` take it as it stands. One that is not is re-hashed first, and if it no longer
+matches the lockfile it is fetched again and replaced, with a warning. That covers a
+store filled by a scadman older than this protection, on its first sync.
+`scadman sync --verify` re-hashes every copy regardless, and `scadman doctor` reports any
+that no longer matches on its `content:` line.
+
+### Deleting the store
+
 Nothing removes store entries yet
 ([#96](https://github.com/CameronBrooks11/scadman/issues/96)). Deleting the store is
-safe: the next `sync` restores what the lockfile needs.
+safe: the next `sync` restores what the lockfile needs. Its entries are read-only, so
+give the permission back first:
+
+```sh
+chmod -R u+w ~/.local/share/scadman/store && rm -rf ~/.local/share/scadman/store
+```
+
+On Windows, `Remove-Item -Recurse -Force "$env:LOCALAPPDATA\scadman\store"`.

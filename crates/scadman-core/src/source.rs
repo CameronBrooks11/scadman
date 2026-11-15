@@ -145,10 +145,10 @@ mod tests {
         // file:// so git honors --depth against a local repo.
         let url = format!("file://{}", repo.path().display());
 
-        let store_root = TempDir::new().unwrap();
-        let store = Store::new(store_root.path());
+        let temp = crate::store::TempStore::new();
+        let store = &temp.store;
 
-        let acquired = fetch_git(&store, &url, &rev).unwrap();
+        let acquired = fetch_git(store, &url, &rev).unwrap();
         assert_eq!(acquired.rev, rev);
         assert_eq!(
             fs::read_to_string(acquired.entry.path.join("std.scad")).unwrap(),
@@ -162,10 +162,10 @@ mod tests {
     fn missing_revision_is_an_error() {
         let (repo, _) = make_source_repo();
         let url = format!("file://{}", repo.path().display());
-        let store_root = TempDir::new().unwrap();
-        let store = Store::new(store_root.path());
+        let temp = crate::store::TempStore::new();
+        let store = &temp.store;
 
-        let err = fetch_git(&store, &url, "0000000000000000000000000000000000000000");
+        let err = fetch_git(store, &url, "0000000000000000000000000000000000000000");
         assert!(err.is_err());
     }
 
@@ -175,10 +175,10 @@ mod tests {
         // fails cleanly, rather than a git option — the argument-injection guard.
         let (repo, _) = make_source_repo();
         let url = format!("file://{}", repo.path().display());
-        let store_root = TempDir::new().unwrap();
-        let store = Store::new(store_root.path());
+        let temp = crate::store::TempStore::new();
+        let store = &temp.store;
 
-        let err = fetch_git(&store, &url, "--not-a-real-ref");
+        let err = fetch_git(store, &url, "--not-a-real-ref");
         assert!(err.is_err());
     }
 }

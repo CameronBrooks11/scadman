@@ -224,6 +224,37 @@ mod tests {
     }
 
     #[test]
+    fn an_environment_over_protected_entries_can_be_rebuilt_and_removed() {
+        // Stored files are write-protected. On Windows the environment's files are hard
+        // links to them, so they carry the same read-only attribute, and replacing the
+        // environment has to delete those links all the same, leaving the store as it was.
+        let src = TempDir::new().unwrap();
+        fs::create_dir_all(src.path().join("sub")).unwrap();
+        fs::write(src.path().join("std.scad"), "// a").unwrap();
+        fs::write(src.path().join("sub").join("more.scad"), "// b").unwrap();
+        let temp = crate::store::TempStore::new();
+        let entry = temp.store.insert(src.path()).unwrap();
+
+        let mut lock = Lockfile::new();
+        lock.packages.push(locked("a", &entry.hash));
+        let env_dir = TempDir::new().unwrap();
+        let env_root = env_dir.path().join("env");
+        build(&lock, &temp.store, &env_root).unwrap();
+        build(&lock, &temp.store, &env_root).unwrap();
+        assert_eq!(
+            fs::read_to_string(env_root.join("a").join("sub").join("more.scad")).unwrap(),
+            "// b"
+        );
+        assert!(
+            fs::write(env_root.join("a").join("std.scad"), "// changed").is_err(),
+            "a write through the environment must not reach the store"
+        );
+        fs::remove_dir_all(&env_root).unwrap();
+        assert!(temp.store.verify(&entry.hash).unwrap());
+        assert!(temp.store.is_protected(&entry.hash).unwrap());
+    }
+
+    #[test]
     fn mirror_tree_recreates_the_files_as_real_files() {
         let src = TempDir::new().unwrap();
         fs::create_dir_all(src.path().join("sub")).unwrap();

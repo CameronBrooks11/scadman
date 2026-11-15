@@ -5,6 +5,12 @@
 //! mutated in place, and inserts are atomic (staged then renamed), so a crash cannot
 //! leave a half-written entry that looks complete. Project environments link into the
 //! store rather than copying (see the `environment` module).
+//!
+//! Because every project on the machine links to the same entry, a write that reaches one
+//! through an environment would change them all. So an entry is write-protected before it
+//! appears (see [`Store::protect`]), and "write-protected" doubles as "known to match its
+//! hash": an entry found writable is re-hashed before it is trusted
+//! ([`Store::is_protected`], [`Store::verify`]).
 
 use std::ffi::OsStr;
 use std::fs;
@@ -29,6 +35,9 @@ pub struct Store {
 pub struct StoreEntry {
     pub hash: String,
     pub path: PathBuf,
+    /// Whether an entry was already there under this hash with other content, and was
+    /// replaced. It means something wrote into the store after the entry was made.
+    pub restored: bool,
 }
 
 /// Check that `hash` has the shape [`content_hash`] produces: 64 lowercase hex digits.
@@ -82,13 +91,21 @@ impl Store {
         self.root.join(hash)
     }
 
-    /// Insert `src`'s content, returning its entry. Idempotent: if the hash already
-    /// exists, the existing (immutable) entry is kept and `src` is not copied again.
+    /// Insert `src`'s content, returning its entry. Idempotent: if an entry with this hash
+    /// exists and still matches it, that entry is kept and `src` is not copied again. One
+    /// that no longer matches was modified after it was stored, and is replaced.
     pub fn insert(&self, src: &Path) -> io::Result<StoreEntry> {
         let hash = content_hash(src)?;
         let dest = self.path_for(&hash);
-        if dest.exists() {
-            return Ok(StoreEntry { hash, path: dest });
+        let modified = fs::symlink_metadata(&dest).is_ok() && !self.verify(&hash)?;
+        if dest.exists() && !modified {
+            // Entries stored before write protection existed get it here.
+            self.protect(&hash).ok();
+            return Ok(StoreEntry {
+                hash,
+                path: dest,
+                restored: false,
+            });
         }
 
         fs::create_dir_all(&self.root)?;
@@ -105,19 +122,63 @@ impl Store {
             fs::remove_dir_all(&staging).ok();
             return Err(err);
         }
+        // Protect before the rename, so an entry is never visible unprotected. Best
+        // effort: a file system that cannot drop write permission still gets the right
+        // content, and its entries are re-hashed on use instead.
+        protect_tree(&staging).ok();
 
+        // Only now that the replacement is complete does the modified entry go.
+        if modified && let Err(err) = remove_tree(&dest) {
+            remove_tree(&staging).ok();
+            return Err(err);
+        }
         match fs::rename(&staging, &dest) {
             Ok(()) => {}
             // Another writer landed the same content first; keep theirs, drop staging.
             Err(_) if dest.exists() => {
-                fs::remove_dir_all(&staging).ok();
+                remove_tree(&staging).ok();
             }
             Err(err) => {
-                fs::remove_dir_all(&staging).ok();
+                remove_tree(&staging).ok();
                 return Err(err);
             }
         }
-        Ok(StoreEntry { hash, path: dest })
+        Ok(StoreEntry {
+            hash,
+            path: dest,
+            restored: modified,
+        })
+    }
+
+    /// Whether the entry for `hash` still holds exactly the content that hashes to it.
+    /// False for a missing entry, and for one holding anything a stored tree never has
+    /// (a symlink, a `.git`), which the hash itself would skip over.
+    pub fn verify(&self, hash: &str) -> io::Result<bool> {
+        let entry = self.path_for(hash);
+        match fs::symlink_metadata(&entry) {
+            Ok(meta) if meta.file_type().is_dir() => {}
+            Ok(_) => return Ok(false),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(err) => return Err(err),
+        }
+        let (actual, skipped) = hash_tree(&entry)?;
+        Ok(!skipped && actual == hash)
+    }
+
+    /// Take write permission off the entry for `hash`: every file, and on Unix every
+    /// directory, so nothing can be added either. (A Windows directory has no such switch;
+    /// there the environment's directories are its own, and only the files are shared.)
+    ///
+    /// Call it only for an entry known to match its hash: [`Store::is_protected`] is read
+    /// as "already verified".
+    pub fn protect(&self, hash: &str) -> io::Result<()> {
+        protect_tree(&self.path_for(hash))
+    }
+
+    /// Whether the entry for `hash` is write-protected throughout, as [`Store::protect`]
+    /// leaves it. An entry that is not has been open to writes since it was last verified.
+    pub fn is_protected(&self, hash: &str) -> io::Result<bool> {
+        is_protected_tree(&self.path_for(hash))
     }
 }
 
@@ -135,8 +196,14 @@ impl Store {
 /// by Unicode normalization form (NFC vs NFD), which git's default
 /// `core.precomposeUnicode` avoids on macOS.
 pub fn content_hash(dir: &Path) -> io::Result<String> {
+    Ok(hash_tree(dir)?.0)
+}
+
+/// [`content_hash`], and whether anything under `dir` was skipped (a `.git`, a symlink).
+fn hash_tree(dir: &Path) -> io::Result<(String, bool)> {
     let mut files = Vec::new();
-    collect_files(dir, PathBuf::new(), &mut files)?;
+    let mut skipped = false;
+    collect_files(dir, PathBuf::new(), &mut files, &mut skipped)?;
     files.sort();
 
     let mut hasher = Sha256::new();
@@ -147,7 +214,7 @@ pub fn content_hash(dir: &Path) -> io::Result<String> {
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
     }
-    Ok(hex(&hasher.finalize()))
+    Ok((hex(&hasher.finalize()), skipped))
 }
 
 /// An environment variable holding an absolute path, if it is set to one.
@@ -187,22 +254,29 @@ fn component_bytes(name: &OsStr) -> io::Result<&[u8]> {
     })
 }
 
-fn collect_files(base: &Path, rel: PathBuf, out: &mut Vec<PathBuf>) -> io::Result<()> {
+fn collect_files(
+    base: &Path,
+    rel: PathBuf,
+    out: &mut Vec<PathBuf>,
+    skipped: &mut bool,
+) -> io::Result<()> {
     for entry in fs::read_dir(base.join(&rel))? {
         let entry = entry?;
         let name = entry.file_name();
         if name == ".git" {
+            *skipped = true;
             continue;
         }
         let file_type = entry.file_type()?;
         // Skip symlinks: following them into the store would let a link like
         // `evil -> /etc/passwd` pull host content into an entry later exposed to OpenSCAD.
         if file_type.is_symlink() {
+            *skipped = true;
             continue;
         }
         let child = rel.join(&name);
         if file_type.is_dir() {
-            collect_files(base, child, out)?;
+            collect_files(base, child, out, skipped)?;
         } else {
             out.push(child);
         }
@@ -233,6 +307,89 @@ fn copy_tree(src: &Path, dest: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Take write permission off every file under `dir`, and on Unix off every directory
+/// including `dir`. Symlinks are left alone: changing one's permissions changes its target's.
+fn protect_tree(dir: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            protect_tree(&entry.path())?;
+        } else if file_type.is_file() {
+            set_readonly(&entry.path())?;
+        }
+    }
+    if cfg!(unix) {
+        set_readonly(dir)?;
+    }
+    Ok(())
+}
+
+fn set_readonly(path: &Path) -> io::Result<()> {
+    let mut permissions = fs::metadata(path)?.permissions();
+    if !permissions.readonly() {
+        permissions.set_readonly(true);
+        fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
+}
+
+/// Whether [`protect_tree`] has nothing left to do under `dir`. A symlink counts as
+/// unprotected: a stored tree has none, so one was put there afterwards.
+fn is_protected_tree(dir: &Path) -> io::Result<bool> {
+    if cfg!(unix) && !fs::metadata(dir)?.permissions().readonly() {
+        return Ok(false);
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let protected = if file_type.is_dir() {
+            is_protected_tree(&entry.path())?
+        } else {
+            file_type.is_file() && entry.metadata()?.permissions().readonly()
+        };
+        if !protected {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Remove `path` and everything under it, write-protected or not.
+fn remove_tree(path: &Path) -> io::Result<()> {
+    if !fs::symlink_metadata(path)?.file_type().is_dir() {
+        return fs::remove_file(path);
+    }
+    make_writable(path)?;
+    fs::remove_dir_all(path)
+}
+
+/// Give back the write permission deleting needs: on Unix a directory's, to unlink what
+/// it holds; elsewhere a file's own. Symlinks are not followed.
+fn make_writable(dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(dir)?.permissions();
+        permissions.set_mode(permissions.mode() | 0o200);
+        fs::set_permissions(dir, permissions)?;
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            make_writable(&entry.path())?;
+        } else if cfg!(not(unix)) && file_type.is_file() {
+            let mut permissions = entry.metadata()?.permissions();
+            // Not the Unix trap the lint is about: this branch never runs there.
+            #[allow(clippy::permissions_set_readonly_false)]
+            permissions.set_readonly(false);
+            fs::set_permissions(entry.path(), permissions)?;
+        }
+    }
+    Ok(())
+}
+
 fn hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -240,6 +397,36 @@ fn hex(bytes: &[u8]) -> String {
         out.push(char::from_digit((byte & 0xf) as u32, 16).unwrap());
     }
     out
+}
+
+/// A store in a temporary directory, for tests. Its entries are write-protected, which on
+/// Unix a temporary directory cannot delete, so dropping this gives the permission back.
+#[cfg(test)]
+pub(crate) struct TempStore {
+    pub(crate) store: Store,
+    dir: tempfile::TempDir,
+}
+
+#[cfg(test)]
+impl TempStore {
+    pub(crate) fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        Self {
+            store: Store::new(dir.path()),
+            dir,
+        }
+    }
+
+    pub(crate) fn root(&self) -> &Path {
+        self.dir.path()
+    }
+}
+
+#[cfg(test)]
+impl Drop for TempStore {
+    fn drop(&mut self) {
+        make_writable(self.dir.path()).ok();
+    }
 }
 
 #[cfg(test)]
@@ -319,8 +506,8 @@ mod tests {
         let src = tempfile::tempdir().unwrap();
         write(src.path(), "std.scad", "x=1;");
 
-        let store_root = tempfile::tempdir().unwrap();
-        let store = Store::new(store_root.path());
+        let temp = TempStore::new();
+        let store = &temp.store;
 
         let first = store.insert(src.path()).unwrap();
         assert!(first.path.join("std.scad").exists());
@@ -352,10 +539,160 @@ mod tests {
             content_hash(plain.path()).unwrap()
         );
 
-        let store_root = tempfile::tempdir().unwrap();
-        let entry = Store::new(store_root.path()).insert(src.path()).unwrap();
+        let temp = TempStore::new();
+        let entry = temp.store.insert(src.path()).unwrap();
         assert!(entry.path.join("std.scad").exists());
         assert!(!entry.path.join("leak").exists());
+    }
+
+    /// A source tree with a file at the root and one in a subdirectory.
+    fn source() -> tempfile::TempDir {
+        let src = tempfile::tempdir().unwrap();
+        write(src.path(), "std.scad", "x=1;");
+        write(src.path(), "lib/util.scad", "y=2;");
+        src
+    }
+
+    /// Lift an entry's protection, as someone set on changing it would.
+    fn unprotect(entry: &Path) {
+        make_writable(entry).unwrap();
+        #[cfg(unix)]
+        for file in ["std.scad", "lib/util.scad"] {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(entry.join(file), fs::Permissions::from_mode(0o644)).unwrap();
+        }
+    }
+
+    #[test]
+    fn an_inserted_entry_cannot_be_written_to() {
+        // Every project links to the same entry, so a write through one project's
+        // environment (an edit, or Python leaving `__pycache__` beside a library's
+        // scripts) used to change the library for all of them.
+        let src = source();
+        let temp = TempStore::new();
+        let entry = temp.store.insert(src.path()).unwrap();
+
+        assert!(temp.store.is_protected(&entry.hash).unwrap());
+        assert!(
+            fs::write(entry.path.join("std.scad"), "x=9;").is_err(),
+            "an existing file must not be writable"
+        );
+        assert!(
+            fs::write(entry.path.join("lib").join("util.scad"), "y=9;").is_err(),
+            "nor one in a subdirectory"
+        );
+        // Windows has no directory permission to withhold; there the environment's
+        // directories are its own, so a new file never lands in the store.
+        #[cfg(unix)]
+        {
+            assert!(fs::write(entry.path.join("new.scad"), "z").is_err());
+            assert!(fs::create_dir(entry.path.join("lib").join("__pycache__")).is_err());
+        }
+        assert!(temp.store.verify(&entry.hash).unwrap());
+    }
+
+    #[test]
+    fn verify_notices_every_kind_of_change() {
+        type Change = fn(&Path);
+        let changes: [(&str, Change); 4] = [
+            ("an edited file", |e| {
+                fs::write(e.join("std.scad"), "x=9;").unwrap()
+            }),
+            ("an added file", |e| {
+                write(e, "lib/__pycache__/util.pyc", "bytecode")
+            }),
+            ("a removed file", |e| {
+                fs::remove_file(e.join("lib").join("util.scad")).unwrap()
+            }),
+            // The content hash skips a `.git`, so equal hashes alone would miss this.
+            ("an added .git", |e| write(e, ".git/config", "[core]")),
+        ];
+        for (what, change) in changes {
+            let src = source();
+            let temp = TempStore::new();
+            let entry = temp.store.insert(src.path()).unwrap();
+            unprotect(&entry.path);
+            change(&entry.path);
+            assert!(!temp.store.verify(&entry.hash).unwrap(), "{what}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_notices_an_added_symlink() {
+        // Skipped by the content hash, like `.git`; OpenSCAD would follow it.
+        let src = source();
+        let temp = TempStore::new();
+        let entry = temp.store.insert(src.path()).unwrap();
+        unprotect(&entry.path);
+        std::os::unix::fs::symlink("/etc/hostname", entry.path.join("extra.scad")).unwrap();
+        assert!(!temp.store.verify(&entry.hash).unwrap());
+        assert!(!temp.store.is_protected(&entry.hash).unwrap());
+    }
+
+    #[test]
+    fn verify_is_false_for_an_entry_that_is_not_there() {
+        let temp = TempStore::new();
+        assert!(!temp.store.verify(&"0".repeat(64)).unwrap());
+    }
+
+    #[test]
+    fn unprotecting_an_entry_shows() {
+        // Protection is what stands for "verified", so lifting it must be visible.
+        let src = source();
+        let temp = TempStore::new();
+        let entry = temp.store.insert(src.path()).unwrap();
+        unprotect(&entry.path);
+        assert!(!temp.store.is_protected(&entry.hash).unwrap());
+        temp.store.protect(&entry.hash).unwrap();
+        assert!(temp.store.is_protected(&entry.hash).unwrap());
+    }
+
+    #[test]
+    fn insert_replaces_an_entry_that_was_modified() {
+        // Inserting used to return whatever sat under the hash, so a fresh `lock` of the
+        // same commit handed out the modified copy under the original hash.
+        let src = source();
+        let temp = TempStore::new();
+        let first = temp.store.insert(src.path()).unwrap();
+        assert!(!first.restored);
+        unprotect(&first.path);
+        fs::write(first.path.join("std.scad"), "x=9;").unwrap();
+        write(&first.path, "lib/__pycache__/util.pyc", "bytecode");
+
+        let again = temp.store.insert(src.path()).unwrap();
+        assert!(again.restored, "the replacement is reported");
+        assert_eq!(again.path, first.path);
+        assert_eq!(
+            fs::read_to_string(again.path.join("std.scad")).unwrap(),
+            "x=1;"
+        );
+        assert!(!again.path.join("lib").join("__pycache__").exists());
+        assert!(temp.store.verify(&again.hash).unwrap());
+        assert!(temp.store.is_protected(&again.hash).unwrap());
+        let names: Vec<_> = fs::read_dir(temp.root())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            std::slice::from_ref(&again.hash),
+            "no staging or old copy left"
+        );
+    }
+
+    #[test]
+    fn insert_protects_an_intact_entry_stored_without_protection() {
+        // An entry written by a scadman from before entries were protected.
+        let src = source();
+        let temp = TempStore::new();
+        let hash = content_hash(src.path()).unwrap();
+        copy_tree(src.path(), &temp.store.path_for(&hash)).unwrap();
+        assert!(!temp.store.is_protected(&hash).unwrap());
+
+        let entry = temp.store.insert(src.path()).unwrap();
+        assert!(!entry.restored);
+        assert!(temp.store.is_protected(&hash).unwrap());
     }
 
     #[test]
