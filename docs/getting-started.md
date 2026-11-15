@@ -10,6 +10,7 @@ Grab the archive for your platform and `checksums.txt` from the
 | Linux x86_64 | `scadman-<version>-x86_64-unknown-linux-gnu.tar.gz` |
 | macOS, Apple Silicon | `scadman-<version>-aarch64-apple-darwin.tar.gz` |
 | macOS, Intel | `scadman-<version>-x86_64-apple-darwin.tar.gz` |
+| Windows x86_64 | `scadman-<version>-x86_64-pc-windows-msvc.zip` |
 
 In the directory you downloaded both into, on Linux:
 
@@ -31,6 +32,24 @@ mkdir -p ~/.local/bin && install -m755 scadman ~/.local/bin/scadman   # or anywh
 A browser marks what it downloads as quarantined, and macOS refuses to run an
 unnotarized binary that carries the mark; `xattr` removes it. A download with `curl`
 is not marked.
+
+On Windows, in PowerShell:
+
+```powershell
+$zip = Get-Item scadman-*-x86_64-pc-windows-msvc.zip
+$want = ((Select-String -Path checksums.txt -Pattern $zip.Name -SimpleMatch).Line -split '\s+')[0]
+$have = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+if ($have -ne $want) { throw "checksum mismatch for $($zip.Name)" }
+Unblock-File $zip
+$dir = "$env:LOCALAPPDATA\Programs\scadman"
+Expand-Archive $zip -DestinationPath $dir -Force
+[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$dir", "User")
+```
+
+That checks the zip against `checksums.txt`, clears the mark Windows puts on a
+downloaded file (the binary is not signed), and adds its folder to your user `PATH`;
+open a new terminal to pick it up. scadman also needs
+[Git for Windows](https://git-scm.com/download/win).
 
 On another platform, build from source with a Rust toolchain (≥ 1.88):
 
