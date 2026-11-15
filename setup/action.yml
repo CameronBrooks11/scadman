@@ -1,0 +1,105 @@
+name: Set up scadman
+description: Install a scadman release, checked against its published sha256, and optionally sync a project's environment.
+
+inputs:
+  version:
+    description: Release tag to install, e.g. v0.1.0-alpha.7. Defaults to the release this action is used at (`CameronBrooks11/scadman/setup@<tag>`).
+    required: false
+    default: ""
+  sync:
+    description: When "true", run `scadman env` in working-directory, which syncs scadman.lock, and export OPENSCADPATH for later steps.
+    required: false
+    default: "false"
+  working-directory:
+    description: The project to sync.
+    required: false
+    default: "."
+
+outputs:
+  version:
+    description: The release installed.
+    value: ${{ steps.resolve.outputs.version }}
+  openscadpath:
+    description: The project's OPENSCADPATH, when sync is "true".
+    value: ${{ steps.sync.outputs.openscadpath }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve the release
+      id: resolve
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        OS: ${{ runner.os }}
+        ARCH: ${{ runner.arch }}
+      run: |
+        version=$(bash "$GITHUB_ACTION_PATH/resolve-version.sh" "$INPUT_VERSION" "$GITHUB_ACTION_PATH")
+        case "$OS-$ARCH" in
+        Linux-X64) target=x86_64-unknown-linux-gnu; ext=tar.gz ;;
+        macOS-ARM64) target=aarch64-apple-darwin; ext=tar.gz ;;
+        macOS-X64) target=x86_64-apple-darwin; ext=tar.gz ;;
+        Windows-X64) target=x86_64-pc-windows-msvc; ext=zip ;;
+        *) echo "scadman publishes no binary for $OS $ARCH" >&2; exit 1 ;;
+        esac
+        dir="$RUNNER_TEMP/scadman-$version"
+        {
+          echo "version=$version"
+          echo "archive=scadman-$version-$target.$ext"
+          echo "dir=$dir"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Download and verify
+      shell: bash
+      env:
+        VERSION: ${{ steps.resolve.outputs.version }}
+        ARCHIVE: ${{ steps.resolve.outputs.archive }}
+        DIR: ${{ steps.resolve.outputs.dir }}
+      run: |
+        mkdir -p "$DIR"
+        base="https://github.com/CameronBrooks11/scadman/releases/download/$VERSION"
+        curl -fsSL -o "$DIR/$ARCHIVE" "$base/$ARCHIVE"
+        curl -fsSL -o "$DIR/checksums.txt" "$base/checksums.txt"
+        cd "$DIR"
+        line=$(grep -F "  $ARCHIVE" checksums.txt) || { echo "checksums.txt does not list $ARCHIVE" >&2; exit 1; }
+        if command -v sha256sum >/dev/null 2>&1; then
+          printf '%s\n' "$line" | sha256sum -c -
+        else
+          printf '%s\n' "$line" | shasum -a 256 -c -
+        fi
+
+    - name: Unpack
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        ARCHIVE: ${{ steps.resolve.outputs.archive }}
+        DIR: ${{ steps.resolve.outputs.dir }}
+      run: tar -xzf "$DIR/$ARCHIVE" -C "$DIR" scadman
+
+    - name: Unpack (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        ARCHIVE: ${{ steps.resolve.outputs.archive }}
+        DIR: ${{ steps.resolve.outputs.dir }}
+      run: Expand-Archive -Path (Join-Path $env:DIR $env:ARCHIVE) -DestinationPath $env:DIR -Force
+
+    - name: Put it on PATH
+      shell: bash
+      env:
+        DIR: ${{ steps.resolve.outputs.dir }}
+      run: |
+        echo "$DIR" >> "$GITHUB_PATH"
+        "$DIR/scadman" --version
+
+    - name: Sync the project
+      id: sync
+      if: inputs.sync == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        DIR: ${{ steps.resolve.outputs.dir }}
+      run: |
+        path=$("$DIR/scadman" env)
+        echo "OPENSCADPATH=$path" >> "$GITHUB_ENV"
+        echo "openscadpath=$path" >> "$GITHUB_OUTPUT"

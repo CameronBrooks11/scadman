@@ -6,6 +6,14 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- **A setup action for GitHub Actions** (#123): `CameronBrooks11/scadman/setup@<tag>`
+  installs that release on Linux, macOS or Windows runners, checked against its
+  `checksums.txt`, and with `sync: "true"` syncs the project and exports `OPENSCADPATH`.
+  It reads its version from its own path, so it works nested inside another composite
+  action, and a `version` input overrides it. CI runs it on all three OS.
+
 ## [0.1.0-alpha.6] — 2026-11-15
 
 Sixth alpha. Two Windows fixes found on a real Windows 11 machine with OpenSCAD 2021.01:

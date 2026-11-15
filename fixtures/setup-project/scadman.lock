@@ -1,0 +1,7 @@
+version = 1
+
+[[package]]
+name = "tessella"
+source = "https://github.com/CameronBrooks11/tessella"
+rev = "6a9cc241326e7d598ab497bcd262fd7a99e49fca"
+hash = "116f662e81b428761c6a5ca1e3c1f0884ffa47d9e595bed4fb379744d5f2b9ad"

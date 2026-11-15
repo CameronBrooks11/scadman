@@ -88,8 +88,8 @@ version. Clippy also runs, as an advisory job that does not block.
    (`cargo check`).
 2. Rename `## [Unreleased]` in `CHANGELOG.md` to the version and date, add a fresh
    empty `## [Unreleased]` above it, and add the link at the bottom of the file.
-3. Update the version in the `cargo install` line, in both `README.md` and
-   `docs/getting-started.md`.
+3. Update the version in the `cargo install` line and the `scadman/setup@` line, in both
+   `README.md` and `docs/getting-started.md`.
 4. Merge, then tag the merge commit `v<version>` and push the tag.
 
 The tag triggers the release workflow, which builds the Linux, macOS and Windows

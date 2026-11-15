@@ -1,0 +1,6 @@
+[project]
+name = "setup-project"
+
+[dependencies.tessella]
+git = "https://github.com/CameronBrooks11/tessella"
+tag = "v0.1.0"

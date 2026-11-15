@@ -189,10 +189,43 @@ jobs:
           & $sm run demo.scad -o demo.stl
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path demo.stl)) { throw "scadman run did not render demo.stl" }
 
+  # The setup action (setup/action.yml) on every OS it supports. Used from ./setup it has
+  # no release in its path, so the version is given; resolve-version.sh's own tests cover
+  # reading it from a downloaded action's path.
+  setup-action:
+    name: Setup action (${{ matrix.os }})
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Version resolution
+        shell: bash
+        run: bash setup/test-resolve-version.sh
+      - id: setup
+        uses: ./setup
+        with:
+          version: v0.1.0-alpha.6
+          sync: "true"
+          working-directory: fixtures/setup-project
+      - name: scadman is on PATH and the project is synced
+        shell: bash
+        env:
+          OUTPUT: ${{ steps.setup.outputs.openscadpath }}
+        run: |
+          scadman --version | grep -F 0.1.0-alpha.6
+          test "$OPENSCADPATH" = "$OUTPUT"
+          test -f "$OPENSCADPATH/tessella/tess.scad"
+
   ok:
     name: ok
     if: always()
-    needs: [changes, check, test, msrv, render-windows]
+    needs: [changes, check, test, msrv, render-windows, setup-action]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
