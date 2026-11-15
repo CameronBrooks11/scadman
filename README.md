@@ -18,9 +18,16 @@ lock time.
 
 ## Install
 
-Grab the prebuilt binary and `checksums.txt` from the
-[latest release](https://github.com/CameronBrooks11/scadman/releases/latest) (Linux x86_64
-only). In the directory you downloaded both into:
+Grab the archive for your platform and `checksums.txt` from the
+[latest release](https://github.com/CameronBrooks11/scadman/releases/latest):
+
+| Platform | Archive |
+| --- | --- |
+| Linux x86_64 | `scadman-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS, Apple Silicon | `scadman-<version>-aarch64-apple-darwin.tar.gz` |
+| macOS, Intel | `scadman-<version>-x86_64-apple-darwin.tar.gz` |
+
+In the directory you downloaded both into, on Linux:
 
 ```sh
 sha256sum --ignore-missing -c checksums.txt
@@ -28,8 +35,20 @@ tar -xzf scadman-*-x86_64-unknown-linux-gnu.tar.gz
 install -Dm755 scadman ~/.local/bin/scadman   # or anywhere on your PATH
 ```
 
-On macOS, or another Linux architecture, build from source with a Rust toolchain
-(≥ 1.88):
+On macOS (use `x86_64-apple-darwin` on an Intel Mac):
+
+```sh
+shasum -a 256 --ignore-missing -c checksums.txt
+tar -xzf scadman-*-aarch64-apple-darwin.tar.gz
+xattr -d com.apple.quarantine scadman 2>/dev/null   # the binary is not notarized
+mkdir -p ~/.local/bin && install -m755 scadman ~/.local/bin/scadman   # or anywhere on your PATH
+```
+
+A browser marks what it downloads as quarantined, and macOS refuses to run an
+unnotarized binary that carries the mark; `xattr` removes it. A download with `curl`
+is not marked.
+
+On another platform, build from source with a Rust toolchain (≥ 1.88):
 
 ```sh
 cargo install --locked --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha.4 scadman-cli

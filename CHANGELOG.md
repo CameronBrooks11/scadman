@@ -6,6 +6,12 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- **macOS binaries** for Apple Silicon (`aarch64-apple-darwin`) and Intel
+  (`x86_64-apple-darwin`) in every release, beside the Linux one, all listed in the one
+  `checksums.txt` (#54). The install docs cover them. CI runs the tests on macOS too.
+
 ## [0.1.0-alpha.4] — 2026-11-10
 
 Fourth alpha. A documentation site, and a run of fixes to how the manifest and the
