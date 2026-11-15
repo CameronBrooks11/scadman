@@ -4,7 +4,8 @@
 //! assume they live under their own name (a self-rooted `include <BOSL2/…>` only works if
 //! `BOSL2/` is on the path — see `docs/ecosystem-survey.md`). So the environment is a
 //! single directory containing one entry per package, named for the package, each a
-//! symlink to that package's immutable [`crate::store`] entry. Pointing `OPENSCADPATH` at
+//! link to that package's immutable [`crate::store`] entry: a symlink on Unix, a directory
+//! junction on Windows, which needs no admin rights or Developer Mode. Pointing `OPENSCADPATH` at
 //! that directory makes `<Name/…>` resolve to the pinned content.
 //!
 //! The environment is rebuilt from scratch each time, so it always reflects the lockfile
@@ -12,7 +13,6 @@
 
 use std::fs;
 use std::io;
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use crate::lockfile::Lockfile;
@@ -22,7 +22,7 @@ use crate::store::{Store, validate_content_hash};
 /// A materialized project environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Environment {
-    /// The environment directory (one symlink per package, named for it).
+    /// The environment directory (one link per package, named for it).
     pub root: PathBuf,
     /// The package names exposed, sorted.
     pub exposed: Vec<String>,
@@ -79,7 +79,7 @@ pub fn build(lock: &Lockfile, store: &Store, env_root: &Path) -> io::Result<Envi
             )));
         }
         let link = env_root.join(&package.name);
-        symlink(&target, &link)?;
+        link_dir(&target, &link)?;
         exposed.push(package.name.clone());
         if package.on_path {
             on_path.push(link);
@@ -96,6 +96,19 @@ pub fn build(lock: &Lockfile, store: &Store, env_root: &Path) -> io::Result<Envi
         exposed,
         openscad_path,
     })
+}
+
+/// Link `link` to the directory `target`.
+#[cfg(unix)]
+fn link_dir(target: &Path, link: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+/// Link `link` to the directory `target` with a junction. A junction needs an absolute
+/// target, which the store path is.
+#[cfg(windows)]
+fn link_dir(target: &Path, link: &Path) -> io::Result<()> {
+    junction::create(target, link)
 }
 
 #[cfg(test)]
@@ -170,6 +183,24 @@ mod tests {
         assert_eq!(env.exposed, vec!["A".to_string()]);
         assert!(env_root.join("A").exists());
         assert!(!env_root.join("B").exists());
+    }
+
+    #[test]
+    fn rebuilding_removes_the_links_not_the_store_content() {
+        // Rebuilding deletes the environment. That must remove each link (a junction on
+        // Windows) without following it into the store.
+        let (_root, store) = store_with(&[(H_A, "// a")]);
+        let mut lock = Lockfile::new();
+        lock.packages.push(locked("a", H_A));
+        let env_dir = TempDir::new().unwrap();
+        let env_root = env_dir.path().join("env");
+        build(&lock, &store, &env_root).unwrap();
+        build(&lock, &store, &env_root).unwrap();
+        fs::remove_dir_all(&env_root).unwrap();
+        assert_eq!(
+            fs::read_to_string(store.path_for(H_A).join("std.scad")).unwrap(),
+            "// a"
+        );
     }
 
     #[test]
