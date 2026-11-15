@@ -6,9 +6,9 @@
 //! leave a half-written entry that looks complete. Project environments link into the
 //! store rather than copying (see the `environment` module).
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -123,16 +123,15 @@ impl Store {
 ///
 /// Files are hashed in sorted relative-path order; each contributes its path, a NUL
 /// separator, the content byte length, and the content bytes — so both content and layout
-/// matter. Paths are hashed as their raw OS bytes (names differing only in invalid UTF-8
-/// stay distinct), and a nested `.git` directory is ignored, so a Git checkout hashes to
-/// its working-tree content alone.
+/// matter. A path is hashed as its components joined with `/` (see `hashed_path`), and a
+/// nested `.git` directory is ignored, so a Git checkout hashes to its working-tree content
+/// alone.
 ///
-/// The hash is reproducible across the Unix platforms scadman runs on (Linux and macOS):
-/// both use `/` as the path separator, and file mode is not hashed. Two residual cross-OS
-/// hazards are git-config concerns, not the hash's: a filename differing only by Unicode
-/// normalization form (NFC vs NFD) — which git's default `core.precomposeUnicode` avoids on
-/// macOS — and `core.autocrlf`, which rewrites file *content* line endings. Windows is not
-/// supported (this uses the Unix byte view of paths).
+/// The hash is the same on Linux, macOS and Windows: the separator is always `/`, and file
+/// mode is not hashed. Line endings are kept out of it by fetching with git's conversion
+/// off (see [`crate::source`]). One residual cross-OS hazard is a filename differing only
+/// by Unicode normalization form (NFC vs NFD), which git's default
+/// `core.precomposeUnicode` avoids on macOS.
 pub fn content_hash(dir: &Path) -> io::Result<String> {
     let mut files = Vec::new();
     collect_files(dir, PathBuf::new(), &mut files)?;
@@ -141,12 +140,42 @@ pub fn content_hash(dir: &Path) -> io::Result<String> {
     let mut hasher = Sha256::new();
     for rel in files {
         let bytes = fs::read(dir.join(&rel))?;
-        hasher.update(rel.as_os_str().as_bytes());
+        hasher.update(hashed_path(&rel)?);
         hasher.update([0u8]);
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
     }
     Ok(hex(&hasher.finalize()))
+}
+
+/// A relative path as the hash sees it: its components joined with `/`, whatever the
+/// platform's separator. On Unix a component is its raw bytes, so names differing only in
+/// invalid UTF-8 stay distinct; elsewhere it must be valid Unicode, and is hashed as UTF-8.
+fn hashed_path(rel: &Path) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    for (i, component) in rel.components().enumerate() {
+        if i > 0 {
+            out.push(b'/');
+        }
+        out.extend_from_slice(component_bytes(component.as_os_str())?);
+    }
+    Ok(out)
+}
+
+#[cfg(unix)]
+fn component_bytes(name: &OsStr) -> io::Result<&[u8]> {
+    use std::os::unix::ffi::OsStrExt;
+    Ok(name.as_bytes())
+}
+
+#[cfg(not(unix))]
+fn component_bytes(name: &OsStr) -> io::Result<&[u8]> {
+    name.to_str().map(str::as_bytes).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("file name {name:?} is not valid Unicode, so it cannot be hashed"),
+        )
+    })
 }
 
 fn collect_files(base: &Path, rel: PathBuf, out: &mut Vec<PathBuf>) -> io::Result<()> {
@@ -295,6 +324,7 @@ mod tests {
         assert_eq!(first, second); // same hash + path, no error
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlinks_are_skipped_not_followed() {
         let external = tempfile::tempdir().unwrap();
@@ -347,6 +377,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_path_is_hashed_with_forward_slashes() {
+        // Built with the platform separator, so on Windows this holds `\`.
+        let rel = PathBuf::from("lib").join("sub").join("deep.scad");
+        assert_eq!(hashed_path(&rel).unwrap(), b"lib/sub/deep.scad");
+    }
+
+    #[cfg(unix)]
     #[test]
     fn executable_bit_does_not_affect_hash() {
         use std::os::unix::fs::PermissionsExt;
