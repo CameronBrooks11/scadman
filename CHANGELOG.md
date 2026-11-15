@@ -6,6 +6,12 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- **macOS binaries** for Apple Silicon (`aarch64-apple-darwin`) and Intel
+  (`x86_64-apple-darwin`) in every release, beside the Linux one, all listed in the one
+  `checksums.txt` (#54). The install docs cover them. CI runs the tests on macOS too.
+
 ### Fixed
 
 - **A user's line-ending settings no longer change what is stored** (#125). scadman's

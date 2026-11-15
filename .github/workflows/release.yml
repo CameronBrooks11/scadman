@@ -1,35 +1,142 @@
-# Build a Linux binary and publish a GitHub release when a `v*` tag is pushed.
+# Build the binaries and publish a GitHub release when a `v*` tag is pushed.
+#
+# A pull request that changes this file runs the same build and packaging without
+# publishing, so the matrix and the checksums are proven before a tag depends on them.
 
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths: [".github/workflows/release.yml"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest, native: true }
+          # macos-latest is arm64; it cross-builds the Intel binary, which it cannot run.
+          - { target: aarch64-apple-darwin, os: macos-latest, native: true }
+          - { target: x86_64-apple-darwin, os: macos-latest, native: false }
+    env:
+      # The tag on a release; on a pull request, a placeholder (ref_name has a slash).
+      VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       # --locked: build exactly the dependency set recorded in Cargo.lock. Without
       # it, a lock that disagrees with Cargo.toml is silently rewritten inside the
       # job, and the binary ships from a resolution the repository never recorded.
       - name: Build
-        run: cargo build --release --locked -p scadman-cli
+        run: cargo build --release --locked -p scadman-cli --target ${{ matrix.target }}
 
-      # The archive plus its SHA-256 in `sha256sum -c` format, so a downloaded
-      # binary can be verified before it goes on PATH.
+      - name: Run the binary
+        if: matrix.native
+        run: target/${{ matrix.target }}/release/scadman --version
+
       - name: Package
+        run: tar -C "target/${{ matrix.target }}/release" -czf "scadman-$VERSION-${{ matrix.target }}.tar.gz" scadman
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: scadman-${{ matrix.target }}
+          path: scadman-*.tar.gz
+          if-no-files-found: error
+
+  # One job writes one checksums.txt over every archive.
+  checksums:
+    name: Checksums
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: scadman-*
+          merge-multiple: true
+          path: dist
+
+      # The archives plus their SHA-256 in `sha256sum -c` format, so a downloaded
+      # binary can be verified before it goes on PATH.
+      - name: Checksums
+        working-directory: dist
         run: |
-          tar -C target/release -czf "scadman-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz" scadman
           sha256sum scadman-*.tar.gz > checksums.txt
+          cat checksums.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist
+          if-no-files-found: error
+
+  # The install commands from README.md and docs/getting-started.md, run as written
+  # on each OS, against what is about to be published.
+  install:
+    name: Install (${{ matrix.os }})
+    needs: [checksums]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+
+      - name: Install as documented (Linux)
+        if: runner.os == 'Linux'
+        working-directory: dist
+        run: |
+          sha256sum --ignore-missing -c checksums.txt
+          tar -xzf scadman-*-x86_64-unknown-linux-gnu.tar.gz
+          install -Dm755 scadman ~/.local/bin/scadman
+
+      - name: Install as documented (macOS)
+        if: runner.os == 'macOS'
+        working-directory: dist
+        run: |
+          shasum -a 256 --ignore-missing -c checksums.txt
+          tar -xzf scadman-*-aarch64-apple-darwin.tar.gz
+          xattr -d com.apple.quarantine scadman 2>/dev/null || true
+          mkdir -p ~/.local/bin && install -m755 scadman ~/.local/bin/scadman
+
+      - name: Run it
+        run: ~/.local/bin/scadman --version
+
+  release:
+    name: Release
+    needs: [install]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
 
       # Publish only this version's CHANGELOG section, not the whole file.
       - name: Extract release notes
@@ -62,4 +169,4 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" \
             --notes-file release-notes.md \
-            scadman-*.tar.gz checksums.txt
+            dist/scadman-*.tar.gz dist/checksums.txt
