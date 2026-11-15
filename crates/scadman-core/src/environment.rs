@@ -4,8 +4,9 @@
 //! assume they live under their own name (a self-rooted `include <BOSL2/…>` only works if
 //! `BOSL2/` is on the path — see `docs/ecosystem-survey.md`). So the environment is a
 //! single directory containing one entry per package, named for the package, each a
-//! link to that package's immutable [`crate::store`] entry: a symlink on Unix, a directory
-//! junction on Windows, which needs no admin rights or Developer Mode. Pointing `OPENSCADPATH` at
+//! view of that package's immutable [`crate::store`] entry: a symlink on Unix, and on
+//! Windows a directory tree of hard links to the stored files (see `mirror_tree`), because
+//! OpenSCAD 2021.01 there cannot read through a junction or a symlink. Pointing `OPENSCADPATH` at
 //! that directory makes `<Name/…>` resolve to the pinned content.
 //!
 //! The environment is rebuilt from scratch each time, so it always reflects the lockfile
@@ -104,11 +105,30 @@ fn link_dir(target: &Path, link: &Path) -> io::Result<()> {
     std::os::unix::fs::symlink(target, link)
 }
 
-/// Link `link` to the directory `target` with a junction. A junction needs an absolute
-/// target, which the store path is.
+/// Expose the directory `target` at `link` as real files: OpenSCAD 2021.01 on Windows
+/// crashes reading a junction or a symlink once a library includes its own files (#132).
 #[cfg(windows)]
 fn link_dir(target: &Path, link: &Path) -> io::Result<()> {
-    junction::create(target, link)
+    mirror_tree(target, link)
+}
+
+/// Recreate the directory tree `target` at `link`, each file a hard link to the original,
+/// or a copy where a hard link cannot be made (another volume, or a file system without
+/// them). The store holds no symlinks, so only directories and files are mirrored.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn mirror_tree(target: &Path, link: &Path) -> io::Result<()> {
+    fs::create_dir_all(link)?;
+    for entry in fs::read_dir(target)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let to = link.join(entry.file_name());
+        if file_type.is_dir() {
+            mirror_tree(&entry.path(), &to)?;
+        } else if file_type.is_file() && fs::hard_link(entry.path(), &to).is_err() {
+            fs::copy(entry.path(), &to)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -187,8 +207,8 @@ mod tests {
 
     #[test]
     fn rebuilding_removes_the_links_not_the_store_content() {
-        // Rebuilding deletes the environment. That must remove each link (a junction on
-        // Windows) without following it into the store.
+        // Rebuilding deletes the environment. That must remove each link (hard links on
+        // Windows) without touching the stored files.
         let (_root, store) = store_with(&[(H_A, "// a")]);
         let mut lock = Lockfile::new();
         lock.packages.push(locked("a", H_A));
@@ -200,6 +220,33 @@ mod tests {
         assert_eq!(
             fs::read_to_string(store.path_for(H_A).join("std.scad")).unwrap(),
             "// a"
+        );
+    }
+
+    #[test]
+    fn mirror_tree_recreates_the_files_as_real_files() {
+        let src = TempDir::new().unwrap();
+        fs::create_dir_all(src.path().join("sub")).unwrap();
+        fs::write(src.path().join("std.scad"), "a").unwrap();
+        fs::write(src.path().join("sub").join("more.scad"), "b").unwrap();
+        let out = TempDir::new().unwrap();
+        let link = out.path().join("lib");
+        mirror_tree(src.path(), &link).unwrap();
+        for (rel, text) in [("std.scad", "a"), ("sub/more.scad", "b")] {
+            let path = link.join(rel);
+            assert!(
+                !fs::symlink_metadata(&path)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        }
+        assert!(
+            !fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
     }
 
