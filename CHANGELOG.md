@@ -6,6 +6,17 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **OpenSCAD 2021.01 crashed on Windows rendering through the environment** (#132).
+  It cannot read a junction or a symlink, so once a library included its own files,
+  `scadman run` failed with `read_symlink: The request is not supported`. On Windows
+  each library in `.scadman/env/` is now a directory tree of hard links to the stored
+  files, or copies where a hard link can't be made (another drive, or a file system
+  without them). Editing a file there changes the stored copy, as with the symlinks on
+  Linux and macOS. CI now renders a library with nested includes through `scadman run`
+  on Windows with OpenSCAD 2021.01.
+
 ## [0.1.0-alpha.5] — 2026-11-15
 
 Fifth alpha. scadman runs on Windows and macOS as well as Linux, with a prebuilt binary
