@@ -678,6 +678,148 @@ fn a_modified_copy_is_left_in_place_when_it_cannot_be_restored() {
     assert!(entry.join("greet.scad").exists(), "the copy stays");
 }
 
+/// A project with a git dependency (`make_lib`'s) and a path dependency beside it, locked
+/// and synced. A path dependency makes every sync re-resolve, reading each library's own
+/// `scadman.toml` from its stored copy. Returns the project and the git library's copy.
+fn synced_project_with_a_path_dep(root: &Path, store: &StoreHome) -> (PathBuf, PathBuf) {
+    let (lib, rev) = make_lib(root);
+    let sib = root.join("sib");
+    fs::create_dir_all(&sib).unwrap();
+    fs::write(sib.join("s.scad"), "// s\n").unwrap();
+    let proj = project_with(
+        root,
+        &format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\nmysib = {{ path = \"../sib\" }}\n",
+            file_url(&lib)
+        ),
+    );
+    for cmd in ["lock", "sync"] {
+        let out = scadman(&proj, store.path(), &[cmd]);
+        assert!(
+            out.status.success(),
+            "{cmd}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let lock = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    let hash = lock
+        .split("[[package]]")
+        .find(|block| block.contains("name = \"mylib\""))
+        .and_then(|block| block.lines().find(|l| l.starts_with("hash = ")))
+        .and_then(|l| l.split('"').nth(1))
+        .expect("mylib is locked")
+        .to_string();
+    (proj, store.entry(&hash))
+}
+
+#[test]
+fn a_modified_copy_is_restored_before_a_path_dep_project_reads_it() {
+    // With a path dependency in the project, sync resolved first and checked the stored
+    // copies afterwards, so the resolver read a modified copy's `scadman.toml`. An
+    // invalid one there made sync, run and `sync --verify` all fail.
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, entry) = synced_project_with_a_path_dep(root.path(), &store);
+    set_writable(&entry, true);
+    fs::write(entry.join("scadman.toml"), "this is = = not a manifest\n").unwrap();
+
+    for args in [&["sync"][..], &["sync", "--verify"]] {
+        let out = scadman(&proj, store.path(), args);
+        assert!(
+            out.status.success(),
+            "{args:?} should restore the copy and carry on: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!entry.join("scadman.toml").exists(), "{args:?}: restored");
+    }
+}
+
+#[test]
+fn a_modified_copy_cannot_add_a_dependency_to_a_path_dep_project() {
+    // Same route, worse outcome: a `scadman.toml` in the modified copy declaring another
+    // library got that library fetched, locked and put in the environment.
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, entry) = synced_project_with_a_path_dep(root.path(), &store);
+    let lock_before = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+
+    let extra = root.path().join("extra");
+    fs::create_dir_all(&extra).unwrap();
+    fs::write(extra.join("e.scad"), "// e\n").unwrap();
+    git(&extra, &["init", "--quiet"]);
+    let extra_rev = commit_all(&extra, "init");
+    set_writable(&entry, true);
+    fs::write(
+        entry.join("scadman.toml"),
+        format!(
+            "[project]\nname = \"mylib\"\n\n[dependencies]\nextra = {{ git = \"{}\", rev = \"{extra_rev}\" }}\n",
+            file_url(&extra)
+        ),
+    )
+    .unwrap();
+
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    assert!(
+        sync.status.success(),
+        "sync: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    assert!(String::from_utf8_lossy(&sync.stderr).contains("restored"));
+    assert_eq!(
+        fs::read_to_string(proj.join("scadman.lock")).unwrap(),
+        lock_before,
+        "the lockfile must not pick anything up from a modified copy"
+    );
+    assert!(!proj.join(".scadman/env/extra").exists());
+}
+
+#[test]
+fn update_restores_a_modified_copy_of_a_dependency_it_holds() {
+    // `update <name>` holds the other dependencies at their locked commits and served
+    // them from the store unchecked, so it reused a modified copy and said nothing.
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, rev) = make_lib(root.path());
+    let other = root.path().join("other");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("o.scad"), "// o\n").unwrap();
+    git(&other, &["init", "--quiet"]);
+    commit_all(&other, "init");
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\nother = {{ git = \"{}\", branch = \"{}\" }}\n",
+            file_url(&lib),
+            file_url(&other),
+            branch_of(&other)
+        ),
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    let lock = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    let hash = lock
+        .split("[[package]]")
+        .find(|block| block.contains("name = \"mylib\""))
+        .and_then(|block| block.lines().find(|l| l.starts_with("hash = ")))
+        .and_then(|l| l.split('"').nth(1))
+        .unwrap()
+        .to_string();
+    let entry = store.entry(&hash);
+    modify_stored(&entry);
+
+    let update = scadman(&proj, store.path(), &["update", "other"]);
+    assert!(
+        update.status.success(),
+        "update: {}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    let err = String::from_utf8_lossy(&update.stderr);
+    assert!(
+        err.contains("`mylib`") && err.contains("restored"),
+        "update should replace the held dependency's modified copy: {err}"
+    );
+    assert_eq!(fs::read_to_string(entry.join("greet.scad")).unwrap(), GREET);
+}
+
 #[test]
 fn locking_in_another_project_does_not_hand_out_a_modified_copy() {
     // A second project locking the same commit fetched the right content, computed the

@@ -10,7 +10,8 @@
 //! through an environment would change them all. So an entry is write-protected before it
 //! appears (see [`Store::protect`]), and "write-protected" doubles as "known to match its
 //! hash": an entry found writable is re-hashed before it is trusted
-//! ([`Store::is_protected`], [`Store::verify`]).
+//! ([`Store::is_protected`], [`Store::verify`]). That shortcut holds only where the
+//! operating system enforces the permission, which it does not for root.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -19,6 +20,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
+
+/// How many times an insert tries to swap its copy in while other processes are replacing
+/// the same entry, before giving up with the last error.
+const SWAP_ATTEMPTS: u32 = 8;
 
 /// Per-process counter making each staging directory name unique, so concurrent
 /// inserts of identical content never share (and clobber) a staging path.
@@ -94,12 +99,15 @@ impl Store {
     /// Insert `src`'s content, returning its entry. Idempotent: if an entry with this hash
     /// exists and still matches it, that entry is kept and `src` is not copied again. One
     /// that no longer matches was modified after it was stored, and is replaced.
+    ///
+    /// The existing entry is always re-hashed here, protected or not: the caller has the
+    /// right content in hand, which is the one moment a wrong entry can be put right.
     pub fn insert(&self, src: &Path) -> io::Result<StoreEntry> {
         let hash = content_hash(src)?;
         let dest = self.path_for(&hash);
-        let modified = fs::symlink_metadata(&dest).is_ok() && !self.verify(&hash)?;
-        if dest.exists() && !modified {
-            // Entries stored before write protection existed get it here.
+        let present = fs::symlink_metadata(&dest).is_ok();
+        if present && self.verify(&hash)? {
+            // An intact entry stored before write protection existed gets it here.
             self.protect(&hash).ok();
             return Ok(StoreEntry {
                 hash,
@@ -110,12 +118,8 @@ impl Store {
 
         fs::create_dir_all(&self.root)?;
         let seq = STAGING_SEQ.fetch_add(1, Ordering::Relaxed);
-        let staging = self.root.join(format!(
-            ".staging-{}-{}-{}",
-            std::process::id(),
-            seq,
-            &hash[..16]
-        ));
+        let unique = format!("{}-{}-{}", std::process::id(), seq, &hash[..16]);
+        let staging = self.root.join(format!(".staging-{unique}"));
         // The staging name is unique to this process and call, so no later insert reuses
         // or clears it: a failed copy has to remove its own partial tree.
         if let Err(err) = copy_tree(src, &staging) {
@@ -127,32 +131,55 @@ impl Store {
         // content, and its entries are re-hashed on use instead.
         protect_tree(&staging).ok();
 
-        // Only now that the replacement is complete does the modified entry go.
-        if modified && let Err(err) = remove_tree(&dest) {
-            remove_tree(&staging).ok();
-            return Err(err);
-        }
-        match fs::rename(&staging, &dest) {
-            Ok(()) => {}
-            // Another writer landed the same content first; keep theirs, drop staging.
-            Err(_) if dest.exists() => {
-                remove_tree(&staging).ok();
+        // Swap the copy in. A modified entry is moved aside, not deleted in place: the swap
+        // is then two renames, and readers are never left looking at a half-deleted tree.
+        // Other processes may be replacing the same entry at this moment, so look again
+        // each time round, and take a sound entry someone else landed as success.
+        let mut restored = false;
+        let mut last_error = None;
+        for attempt in 0..SWAP_ATTEMPTS {
+            let mut moved_aside = None;
+            if fs::symlink_metadata(&dest).is_ok() {
+                // Sound now: another process landed the same content first.
+                if self.verify(&hash)? {
+                    remove_tree(&staging).ok();
+                    return Ok(StoreEntry {
+                        hash,
+                        path: dest,
+                        restored,
+                    });
+                }
+                let aside = self.root.join(format!(".replaced-{unique}-{attempt}"));
+                if fs::rename(&dest, &aside).is_ok() {
+                    restored = true;
+                    moved_aside = Some(aside);
+                }
             }
-            Err(err) => {
-                remove_tree(&staging).ok();
-                return Err(err);
+            let landed = fs::rename(&staging, &dest);
+            // Only once the replacement is in place (or has failed to be) does the old
+            // copy go. It is ours to delete either way: nothing else knows its name.
+            if let Some(aside) = moved_aside {
+                remove_tree(&aside).ok();
+            }
+            match landed {
+                Ok(()) => {
+                    return Ok(StoreEntry {
+                        hash,
+                        path: dest,
+                        restored,
+                    });
+                }
+                Err(err) => last_error = Some(err),
             }
         }
-        Ok(StoreEntry {
-            hash,
-            path: dest,
-            restored: modified,
-        })
+        remove_tree(&staging).ok();
+        Err(last_error.unwrap_or_else(|| io::Error::other("store entry could not be replaced")))
     }
 
     /// Whether the entry for `hash` still holds exactly the content that hashes to it.
     /// False for a missing entry, and for one holding anything a stored tree never has
-    /// (a symlink, a `.git`), which the hash itself would skip over.
+    /// (a symlink, a `.git`, a FIFO or other special file), which the hash itself skips.
+    /// It cannot see an added empty directory: the hash covers files only.
     pub fn verify(&self, hash: &str) -> io::Result<bool> {
         let entry = self.path_for(hash);
         match fs::symlink_metadata(&entry) {
@@ -161,8 +188,13 @@ impl Store {
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(err) => return Err(err),
         }
-        let (actual, skipped) = hash_tree(&entry)?;
-        Ok(!skipped && actual == hash)
+        // An entry replaced by another process while it is being read reads as
+        // unsound; whoever asked looks again.
+        match hash_tree(&entry) {
+            Ok((actual, skipped)) => Ok(!skipped && actual == hash),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err),
+        }
     }
 
     /// Take write permission off the entry for `hash`: every file, and on Unix every
@@ -178,7 +210,19 @@ impl Store {
     /// Whether the entry for `hash` is write-protected throughout, as [`Store::protect`]
     /// leaves it. An entry that is not has been open to writes since it was last verified.
     pub fn is_protected(&self, hash: &str) -> io::Result<bool> {
-        is_protected_tree(&self.path_for(hash))
+        let entry = self.path_for(hash);
+        // Not through a symlink: a link standing where the entry was is not the entry,
+        // whatever state the tree behind it is in.
+        match fs::symlink_metadata(&entry) {
+            Ok(meta) if meta.file_type().is_dir() => match is_protected_tree(&entry) {
+                // Replaced by another process part-way through the walk.
+                Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+                other => other,
+            },
+            Ok(_) => Ok(false),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -199,7 +243,8 @@ pub fn content_hash(dir: &Path) -> io::Result<String> {
     Ok(hash_tree(dir)?.0)
 }
 
-/// [`content_hash`], and whether anything under `dir` was skipped (a `.git`, a symlink).
+/// [`content_hash`], and whether anything under `dir` was skipped: a `.git`, a symlink,
+/// or a special file.
 fn hash_tree(dir: &Path) -> io::Result<(String, bool)> {
     let mut files = Vec::new();
     let mut skipped = false;
@@ -277,8 +322,11 @@ fn collect_files(
         let child = rel.join(&name);
         if file_type.is_dir() {
             collect_files(base, child, out, skipped)?;
-        } else {
+        } else if file_type.is_file() {
             out.push(child);
+        } else {
+            // A FIFO, socket or device: reading one can block for good.
+            *skipped = true;
         }
     }
     Ok(())
@@ -300,9 +348,9 @@ fn copy_tree(src: &Path, dest: &Path) -> io::Result<()> {
         let to = dest.join(&name);
         if file_type.is_dir() {
             copy_tree(&from, &to)?;
-        } else {
+        } else if file_type.is_file() {
             fs::copy(&from, &to)?;
-        }
+        } // anything else is not hashed either (see collect_files)
     }
     Ok(())
 }
@@ -359,6 +407,12 @@ fn is_protected_tree(dir: &Path) -> io::Result<bool> {
 fn remove_tree(path: &Path) -> io::Result<()> {
     if !fs::symlink_metadata(path)?.file_type().is_dir() {
         return fs::remove_file(path);
+    }
+    // Off Unix, try as it is first. Lifting a file's read-only attribute lifts it for
+    // every hard link to that file, and on Windows other projects' environments hold
+    // such links until they are next rebuilt.
+    if cfg!(not(unix)) && fs::remove_dir_all(path).is_ok() {
+        return Ok(());
     }
     make_writable(path)?;
     fs::remove_dir_all(path)
@@ -649,6 +703,21 @@ mod tests {
     }
 
     #[test]
+    fn one_writable_file_is_enough_to_count_as_unprotected() {
+        // To edit a file in place only that file needs its permission back; every
+        // directory stays read-only. That must still send the copy to be re-hashed.
+        let src = source();
+        let temp = TempStore::new();
+        let entry = temp.store.insert(src.path()).unwrap();
+        let file = entry.path.join("lib").join("util.scad");
+        let mut permissions = fs::metadata(&file).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        fs::set_permissions(&file, permissions).unwrap();
+        assert!(!temp.store.is_protected(&entry.hash).unwrap());
+    }
+
+    #[test]
     fn insert_replaces_an_entry_that_was_modified() {
         // Inserting used to return whatever sat under the hash, so a fresh `lock` of the
         // same commit handed out the modified copy under the original hash.
@@ -678,6 +747,110 @@ mod tests {
             names,
             std::slice::from_ref(&again.hash),
             "no staging or old copy left"
+        );
+    }
+
+    #[test]
+    fn concurrent_inserts_over_a_modified_entry_all_succeed() {
+        // Several projects syncing at once over one modified copy each set out to replace
+        // it. Deleting it in place let one delete another's finished replacement, and
+        // most of them failed with "Directory not empty".
+        let src = tempfile::tempdir().unwrap();
+        for i in 0..300 {
+            write(src.path(), &format!("d{}/f{i}.scad", i % 10), "x=1;");
+        }
+        let temp = TempStore::new();
+        let store = &temp.store;
+        let entry = store.insert(src.path()).unwrap();
+        for round in 0..5 {
+            make_writable(&entry.path).unwrap();
+            write(&entry.path, "d0/__pycache__/x.pyc", "bytecode");
+            let results: Vec<io::Result<StoreEntry>> = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..8)
+                    .map(|_| scope.spawn(|| store.insert(src.path())))
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            for result in &results {
+                assert!(result.is_ok(), "round {round}: {result:?}");
+            }
+            assert!(
+                results.iter().any(|r| r.as_ref().unwrap().restored),
+                "round {round}: someone reports the replacement"
+            );
+            assert!(store.verify(&entry.hash).unwrap(), "round {round}");
+            assert!(store.is_protected(&entry.hash).unwrap(), "round {round}");
+        }
+        let names: Vec<_> = fs::read_dir(temp.root())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            std::slice::from_ref(&entry.hash),
+            "nothing left beside the entry"
+        );
+    }
+
+    #[test]
+    fn insert_replaces_a_modified_entry_that_was_protected_again() {
+        // `sync --verify` finds such a copy and fetches the library again; the insert that
+        // follows has to replace it, not take its protection as proof.
+        let src = source();
+        let temp = TempStore::new();
+        let entry = temp.store.insert(src.path()).unwrap();
+        unprotect(&entry.path);
+        fs::write(entry.path.join("std.scad"), "x=9;").unwrap();
+        temp.store.protect(&entry.hash).unwrap();
+        assert!(temp.store.is_protected(&entry.hash).unwrap());
+
+        let again = temp.store.insert(src.path()).unwrap();
+        assert!(again.restored);
+        assert!(temp.store.verify(&entry.hash).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_in_place_of_an_entry_is_neither_protected_nor_verified() {
+        let src = source();
+        let temp = TempStore::new();
+        let entry = temp.store.insert(src.path()).unwrap();
+        let aside = temp.root().join("moved");
+        fs::rename(&entry.path, &aside).unwrap();
+        std::os::unix::fs::symlink(&aside, &entry.path).unwrap();
+        // The tree behind the link is intact and read-only; the entry is still not ours.
+        assert!(!temp.store.is_protected(&entry.hash).unwrap());
+        assert!(!temp.store.verify(&entry.hash).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_in_an_entry_fails_verification_without_being_read() {
+        // Reading a FIFO blocks until something writes to it, so hashing one hung sync.
+        let src = source();
+        let temp = TempStore::new();
+        let entry = temp.store.insert(src.path()).unwrap();
+        unprotect(&entry.path);
+        let made = std::process::Command::new("mkfifo")
+            .arg(entry.path.join("pipe"))
+            .status()
+            .expect("run mkfifo");
+        assert!(made.success());
+        let (done, finished) = std::sync::mpsc::channel();
+        let store = temp.store.clone();
+        let hash = entry.hash.clone();
+        std::thread::spawn(move || done.send(store.verify(&hash)).ok());
+        let verdict = finished.recv_timeout(std::time::Duration::from_secs(10));
+        // Unblock the reader if it is stuck, so the test can end either way.
+        if verdict.is_err() {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(entry.path.join("pipe"))
+                .ok();
+        }
+        assert!(
+            !verdict.expect("verify must not block on a FIFO").unwrap(),
+            "a FIFO is not something a stored tree holds"
         );
     }
 

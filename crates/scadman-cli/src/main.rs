@@ -979,6 +979,8 @@ fn update_cmd(names: Vec<String>) -> Result<()> {
             }
         }
         let base_lock = previous.clone().unwrap_or_else(Lockfile::new);
+        // The dependencies held at their locked commits are served from the store.
+        restore_modified(&base_lock, &store, false, &refresh)?;
         let fetcher = CachedGitFetcher::new(&store, &base_lock, refresh);
         let lock = resolve(&manifest, &base, &fetcher)
             .map_err(|e| anyhow::anyhow!("{e}"))?
@@ -1040,7 +1042,7 @@ fn report_update(previous: Option<&Lockfile>, updated: &Lockfile) {
 /// about undeclared imports (to stderr). Prints nothing to stdout, so `env` can emit only
 /// its report.
 fn prepare_environment(store: &Store, verify: bool) -> Result<(Lockfile, Environment)> {
-    let lock = read_or_lock(store)?;
+    let lock = read_or_lock(store, verify)?;
     ensure_stored(&lock, store, verify)?;
     let env = build_environment(&lock, store, &env_root()?).context("build environment")?;
     warn_unmet_imports(&lock, &env);
@@ -1245,7 +1247,7 @@ fn holds_reference(reference: &GitRef, rev: &str) -> bool {
     }
 }
 
-fn read_or_lock(store: &Store) -> Result<Lockfile> {
+fn read_or_lock(store: &Store, verify: bool) -> Result<Lockfile> {
     let manifest = load_manifest()?;
     if Path::new(lockfile::LOCKFILE_FILE).exists() {
         let text = fs::read_to_string(lockfile::LOCKFILE_FILE)?;
@@ -1268,6 +1270,9 @@ fn read_or_lock(store: &Store) -> Result<Lockfile> {
                     manifest::MANIFEST_FILE
                 );
             }
+            // The resolve below is served the locked git copies straight from the store
+            // and reads their manifests, so they are checked first.
+            restore_modified(&lock, store, verify, &HashSet::new())?;
             let fetcher = CachedGitFetcher::new(store, &lock, HashSet::new());
             let base = std::env::current_dir().context("determine project directory")?;
             let refreshed = resolve(&manifest, &base, &fetcher)
@@ -1301,28 +1306,11 @@ fn write_lock(lock: &Lockfile) -> Result<()> {
 
 /// Ensure every locked package's content is in the store and is what the lockfile pins:
 /// fetch what is missing (a fresh checkout), and replace what was modified.
-///
-/// A stored copy is write-protected once it is known to match its hash, so one that still
-/// is has had no chance to change and is taken as it stands. One that is not — stored by a
-/// scadman from before copies were protected, or with the protection since lifted — is
-/// re-hashed, and so is every copy when `verify` is set.
 fn ensure_stored(lock: &Lockfile, store: &Store, verify: bool) -> Result<()> {
     for package in &lock.packages {
-        let mut modified = false;
-        if store.path_for(&package.hash).exists() {
-            let inspect = || -> io::Result<bool> {
-                if !verify && store.is_protected(&package.hash)? {
-                    return Ok(true);
-                }
-                store.verify(&package.hash)
-            };
-            if inspect().with_context(|| format!("check `{}` in the store", package.name))? {
-                // Best effort: where a file system cannot hold the protection, the copy
-                // is simply re-hashed next time.
-                store.protect(&package.hash).ok();
-                continue;
-            }
-            modified = true;
+        let present = store.path_for(&package.hash).exists();
+        if present && stored_copy_is_sound(package, store, verify)? {
+            continue;
         }
         // A path dependency has no remote to re-fetch from; its content is inserted at lock
         // time. If it is missing here (e.g. a store cleared out from under a committed lock),
@@ -1331,33 +1319,90 @@ fn ensure_stored(lock: &Lockfile, store: &Store, verify: bool) -> Result<()> {
             bail!(
                 "path dependency `{}` content is {} the store — run `scadman lock`",
                 package.name,
-                if modified { "modified in" } else { "not in" }
+                if present { "modified in" } else { "not in" }
             );
         }
-        // Fetching replaces a modified copy only once the right content is in hand, so a
-        // failure here (no network, say) leaves it where it was.
-        let acquired = fetch_git(store, &package.source, &package.rev).with_context(|| {
-            if modified {
-                format!(
-                    "`{}` was modified in the store, and fetching {} to restore it failed",
-                    package.name, package.rev
-                )
-            } else {
-                format!("fetch {} @ {}", package.name, package.rev)
-            }
-        })?;
-        if acquired.entry.hash != package.hash {
-            bail!(
-                "integrity: {} @ {} hashed to {} but the lockfile expects {}",
-                package.name,
-                package.rev,
-                acquired.entry.hash,
-                package.hash
-            );
+        fetch_locked(package, store, present)?;
+    }
+    Ok(())
+}
+
+/// Replace the modified stored copy of every git package in `lock` that the coming resolve
+/// will be served from the store, before anything reads it. A resolve reads each
+/// library's own `scadman.toml` out of its stored copy, so a modified one must not get
+/// that far. `skip` names sources about to be fetched afresh anyway. Missing copies and
+/// path dependencies are the resolve's own business.
+fn restore_modified(
+    lock: &Lockfile,
+    store: &Store,
+    verify: bool,
+    skip: &HashSet<String>,
+) -> Result<()> {
+    for package in &lock.packages {
+        if package.source.starts_with(lockfile::PATH_SOURCE_PREFIX)
+            || skip.contains(&package.source)
+            || !store.path_for(&package.hash).exists()
+            || stored_copy_is_sound(package, store, verify)?
+        {
+            continue;
         }
-        if modified {
-            warn_restored(&package.name, &package.hash);
+        fetch_locked(package, store, true)?;
+    }
+    Ok(())
+}
+
+/// Whether `package`'s stored copy can be used as it stands, protecting it if so.
+///
+/// A copy is write-protected once it is known to match its hash, so one that still is has
+/// had no chance to change and is taken as it stands. One that is not — stored by a
+/// scadman from before copies were protected, or with the protection since lifted — is
+/// re-hashed, and so is every copy when `verify` is set.
+fn stored_copy_is_sound(
+    package: &lockfile::LockedPackage,
+    store: &Store,
+    verify: bool,
+) -> Result<bool> {
+    let inspect = || -> io::Result<bool> {
+        if !verify && store.is_protected(&package.hash)? {
+            return Ok(true);
         }
+        store.verify(&package.hash)
+    };
+    let sound = inspect().with_context(|| format!("check `{}` in the store", package.name))?;
+    if sound {
+        // Best effort: where a file system cannot hold the protection, the copy is
+        // simply re-hashed next time.
+        store.protect(&package.hash).ok();
+    }
+    Ok(sound)
+}
+
+/// Fetch `package` at its locked commit into the store and check it hashes to the locked
+/// value. With `replacing` set, a modified copy is in the way: it is swapped out only once
+/// the right content is in hand, so a failure here (no network, say) leaves it where it
+/// was.
+fn fetch_locked(package: &lockfile::LockedPackage, store: &Store, replacing: bool) -> Result<()> {
+    let acquired = fetch_git(store, &package.source, &package.rev).with_context(|| {
+        if replacing {
+            format!(
+                "`{}` was modified in the store, and restoring it from {} failed",
+                package.name, package.rev
+            )
+        } else {
+            format!("fetch {} @ {}", package.name, package.rev)
+        }
+    })?;
+    if acquired.entry.hash != package.hash {
+        bail!(
+            "integrity: {} @ {} hashed to {} but the lockfile expects {}",
+            package.name,
+            package.rev,
+            acquired.entry.hash,
+            package.hash
+        );
+    }
+    if replacing {
+        warn_restored(&package.name, &package.hash);
     }
     Ok(())
 }

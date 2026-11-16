@@ -132,8 +132,9 @@ One edit is not detected: a changed `tag` or `branch` name on an unchanged URL. 
 | `.scadman/env/` | The project environment: one entry per library: a symlink, or on Windows a tree of hard links to the stored files (copies where a hard link can't be made), rebuilt on every `sync`. | no (`init` ignores it) |
 | `$XDG_DATA_HOME/scadman/store/`, or else `~/.local/share/scadman/store/` (Linux, macOS) or `%LOCALAPPDATA%\scadman\store\` (Windows) | The store: one read-only directory per content hash, shared by all projects. | not in the project |
 
-A library's stored copy is its working tree without `.git`. Symbolic links inside a
-library are not copied. File modes do not affect the hash.
+A library's stored copy is its working tree without `.git`. Symbolic links and special
+files (FIFOs, sockets, devices) inside a library are not copied. File modes do not affect
+the hash.
 
 ### Stored libraries are read-only
 
@@ -153,6 +154,10 @@ matches the lockfile it is fetched again and replaced, with a warning. That cove
 store filled by a scadman older than this protection, on its first sync.
 `scadman sync --verify` re-hashes every copy regardless, and `scadman doctor` reports any
 that no longer matches on its `content:` line.
+
+File permissions do not bind root. Where scadman and the tools around it run as root, as
+in many CI containers, a stored file can still be edited in place and will still look
+protected, so use `scadman sync --verify` there.
 
 ### Deleting the store
 

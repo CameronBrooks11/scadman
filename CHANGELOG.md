@@ -20,9 +20,11 @@ All notable changes to scadman are recorded here. Format loosely follows
   - A copy found writable is re-hashed before `sync`, `run` and `env` use it, and one
     that no longer matches is fetched again and replaced, with a warning. A store filled
     by an earlier scadman is checked this way on its first sync. `lock` and `update`
-    replace a modified copy the same way instead of reusing it.
+    replace a modified copy the same way instead of reusing it. The check comes before
+    anything reads a copy's own `scadman.toml`.
   - `scadman sync --verify` re-hashes every copy, protected or not, and `doctor` has a
-    `content:` line naming any that no longer matches.
+    `content:` line naming any that no longer matches. Use `--verify` where scadman
+    runs as root, which file permissions do not bind.
 
 ### Changed
 
