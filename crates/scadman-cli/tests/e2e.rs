@@ -774,6 +774,47 @@ fn a_modified_copy_cannot_add_a_dependency_to_a_path_dep_project() {
 }
 
 #[test]
+fn sync_verify_reaches_the_copies_a_path_dep_project_resolves_from() {
+    // A copy modified and then protected again is only found by `--verify`. In a project
+    // with a path dependency that has to happen before the resolve reads the copy, or the
+    // lockfile takes up whatever its `scadman.toml` names and keeps it.
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, entry) = synced_project_with_a_path_dep(root.path(), &store);
+    let lock_before = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+
+    let extra = root.path().join("extra");
+    fs::create_dir_all(&extra).unwrap();
+    fs::write(extra.join("e.scad"), "// e\n").unwrap();
+    git(&extra, &["init", "--quiet"]);
+    let extra_rev = commit_all(&extra, "init");
+    set_writable(&entry, true);
+    fs::write(
+        entry.join("scadman.toml"),
+        format!(
+            "[project]\nname = \"mylib\"\n\n[dependencies]\nextra = {{ git = \"{}\", rev = \"{extra_rev}\" }}\n",
+            file_url(&extra)
+        ),
+    )
+    .unwrap();
+    set_writable(&entry, false);
+
+    let verify = scadman(&proj, store.path(), &["sync", "--verify"]);
+    assert!(
+        verify.status.success(),
+        "sync --verify: {}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    assert!(String::from_utf8_lossy(&verify.stderr).contains("restored"));
+    assert_eq!(
+        fs::read_to_string(proj.join("scadman.lock")).unwrap(),
+        lock_before,
+        "the lockfile must not pick anything up from the modified copy"
+    );
+    assert!(!entry.join("scadman.toml").exists());
+}
+
+#[test]
 fn update_restores_a_modified_copy_of_a_dependency_it_holds() {
     // `update <name>` holds the other dependencies at their locked commits and served
     // them from the store unchecked, so it reused a modified copy and said nothing.
