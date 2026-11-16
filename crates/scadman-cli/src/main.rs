@@ -979,8 +979,14 @@ fn update_cmd(names: Vec<String>) -> Result<()> {
             }
         }
         let base_lock = previous.clone().unwrap_or_else(Lockfile::new);
-        // The dependencies held at their locked commits are served from the store.
-        restore_modified(&base_lock, &store, false, &refresh)?;
+        // The dependencies held at their locked commits are served from the store. Only
+        // those the manifest still leads to: a copy nothing will read is left alone.
+        restore_modified(
+            &still_required(&manifest, &base_lock),
+            &store,
+            false,
+            &refresh,
+        )?;
         let fetcher = CachedGitFetcher::new(&store, &base_lock, refresh);
         let lock = resolve(&manifest, &base, &fetcher)
             .map_err(|e| anyhow::anyhow!("{e}"))?
@@ -1349,6 +1355,29 @@ fn restore_modified(
         fetch_locked(package, store, true)?;
     }
     Ok(())
+}
+
+/// The part of `lock` the manifest still leads to: its dependencies, and whatever those
+/// depend on by the lock's own account. What `scadman remove` left behind is not in it.
+fn still_required(manifest: &Manifest, lock: &Lockfile) -> Lockfile {
+    let mut required = BTreeSet::new();
+    let mut pending: Vec<&str> = manifest.dependencies.keys().map(String::as_str).collect();
+    while let Some(name) = pending.pop() {
+        if required.insert(name)
+            && let Some(package) = lock.packages.iter().find(|p| p.name == name)
+        {
+            pending.extend(package.dependencies.iter().map(String::as_str));
+        }
+    }
+    Lockfile {
+        version: lock.version,
+        packages: lock
+            .packages
+            .iter()
+            .filter(|p| required.contains(p.name.as_str()))
+            .cloned()
+            .collect(),
+    }
 }
 
 /// Whether `package`'s stored copy can be used as it stands, protecting it if so.

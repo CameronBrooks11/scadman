@@ -821,6 +821,57 @@ fn update_restores_a_modified_copy_of_a_dependency_it_holds() {
 }
 
 #[test]
+fn update_leaves_alone_the_copy_of_a_dependency_no_longer_declared() {
+    // `update <name>` checks the copies it will be served from the store. A dependency
+    // since removed from the manifest is not one of them: its copy being modified, and
+    // its remote gone, is no reason for the update of another to fail.
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, rev) = make_lib(root.path());
+    let other = root.path().join("other");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("o.scad"), "// o\n").unwrap();
+    git(&other, &["init", "--quiet"]);
+    commit_all(&other, "init");
+    let other_dep = format!(
+        "other = {{ git = \"{}\", branch = \"{}\" }}\n",
+        file_url(&other),
+        branch_of(&other)
+    );
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\n{other_dep}",
+            file_url(&lib)
+        ),
+    );
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    let lock = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    let hash = lock
+        .split("[[package]]")
+        .find(|block| block.contains("name = \"mylib\""))
+        .and_then(|block| block.lines().find(|l| l.starts_with("hash = ")))
+        .and_then(|l| l.split('"').nth(1))
+        .unwrap()
+        .to_string();
+
+    modify_stored(&store.entry(&hash));
+    fs::remove_dir_all(&lib).unwrap();
+    fs::write(
+        proj.join("scadman.toml"),
+        format!("[project]\nname = \"app\"\n\n[dependencies]\n{other_dep}"),
+    )
+    .unwrap();
+
+    let update = scadman(&proj, store.path(), &["update", "other"]);
+    assert!(
+        update.status.success(),
+        "update: {}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+}
+
+#[test]
 fn locking_in_another_project_does_not_hand_out_a_modified_copy() {
     // A second project locking the same commit fetched the right content, computed the
     // right hash, and was then given the modified copy already stored under it.

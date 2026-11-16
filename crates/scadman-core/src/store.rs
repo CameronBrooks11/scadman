@@ -201,13 +201,11 @@ impl Store {
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(err) => return Err(err),
         }
-        // An entry replaced by another process while it is being read reads as
-        // unsound; whoever asked looks again.
-        match hash_tree(&entry) {
-            Ok((actual, skipped)) => Ok(!skipped && actual == hash),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(err),
-        }
+        // An entry that cannot be read through is unsound, whatever the reason: it was
+        // replaced by another process part-way, or a file in it can no longer be read.
+        // Reporting that as an error would stop the caller fetching it again, which is
+        // the one thing that puts it right.
+        Ok(hash_tree(&entry).is_ok_and(|(actual, skipped)| !skipped && actual == hash))
     }
 
     /// Take write permission off the entry for `hash`: every file, and on Unix every
@@ -227,11 +225,9 @@ impl Store {
         // Not through a symlink: a link standing where the entry was is not the entry,
         // whatever state the tree behind it is in.
         match fs::symlink_metadata(&entry) {
-            Ok(meta) if meta.file_type().is_dir() => match is_protected_tree(&entry) {
-                // Replaced by another process part-way through the walk.
-                Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-                other => other,
-            },
+            // A walk that fails part-way (the entry replaced by another process, or a
+            // directory in it unreadable) leaves it unproven, so it gets re-hashed.
+            Ok(meta) if meta.file_type().is_dir() => Ok(is_protected_tree(&entry).unwrap_or(false)),
             Ok(_) => Ok(false),
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(err) => Err(err),
@@ -865,6 +861,28 @@ mod tests {
             !verdict.expect("verify must not block on a FIFO").unwrap(),
             "a FIFO is not something a stored tree holds"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_entry_that_cannot_be_read_is_unsound_and_gets_replaced() {
+        // A stored file nobody can read made verification fail with an error, so the one
+        // thing that could put the entry right (fetching it again) never got to run.
+        use std::os::unix::fs::PermissionsExt;
+        let src = source();
+        let temp = TempStore::new();
+        let entry = temp.store.insert(src.path()).unwrap();
+        let file = entry.path.join("lib").join("util.scad");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&file).is_ok() {
+            return; // root reads anything; there is nothing to test
+        }
+
+        assert!(!temp.store.verify(&entry.hash).unwrap());
+        let again = temp.store.insert(src.path()).unwrap();
+        assert!(again.restored);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "y=2;");
+        assert!(temp.store.verify(&entry.hash).unwrap());
     }
 
     #[test]
