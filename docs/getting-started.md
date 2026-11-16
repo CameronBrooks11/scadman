@@ -107,11 +107,11 @@ lives.
 | `scadman list` | Show declared dependencies and the commit each is locked to. |
 | `scadman lock` | Resolve every dependency and write `scadman.lock`. |
 | `scadman update [name…]` | Move branch and tag dependencies to their newest commit, all or just the named ones, and report what moved. |
-| `scadman sync` | Build the project environment from the lockfile and warn about undeclared imports. |
+| `scadman sync [--verify]` | Build the project environment from the lockfile and warn about undeclared imports. `--verify` re-hashes every stored library first and restores any that was modified. |
 | `scadman run -- <openscad args>` | Sync, then run OpenSCAD with the environment on `OPENSCADPATH`. |
 | `scadman env [--json \| --write-vscode]` | Sync, then print the `OPENSCADPATH` for editors and tools. |
 | `scadman graph [--json]` | Print the locked dependency graph. |
-| `scadman doctor` | Report on OpenSCAD, the store, the manifest, the lockfile and the environment. |
+| `scadman doctor` | Report on OpenSCAD, the store, the manifest, the lockfile, whether the stored libraries are unmodified, and the environment. |
 
 A branch or tag is pinned to an exact commit at lock time and stays there until you run
 `scadman update`. A `--rev` pin never moves; give it the full 40-character commit hash,

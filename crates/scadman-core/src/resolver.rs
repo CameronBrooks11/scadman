@@ -70,11 +70,28 @@ pub trait Fetcher {
 /// The production fetcher: git acquisition into a content-addressed store.
 pub struct GitFetcher {
     store: Store,
+    /// Hashes of the entries this fetcher found modified in the store and replaced.
+    restored: std::cell::RefCell<Vec<String>>,
 }
 
 impl GitFetcher {
     pub fn new(store: Store) -> Self {
-        Self { store }
+        Self {
+            store,
+            restored: Default::default(),
+        }
+    }
+
+    /// The hashes of the store entries found modified and replaced by a fetch so far,
+    /// handing them over: a second call returns only what came after.
+    pub fn take_restored(&self) -> Vec<String> {
+        self.restored.take()
+    }
+
+    fn note(&self, entry: &crate::store::StoreEntry) {
+        if entry.restored {
+            self.restored.borrow_mut().push(entry.hash.clone());
+        }
     }
 }
 
@@ -86,6 +103,7 @@ impl Fetcher for GitFetcher {
             validate_commit_hash(rev).map_err(io::Error::other)?;
         }
         let acquired = fetch_git(&self.store, url, reference.as_str())?;
+        self.note(&acquired.entry);
         Ok(Fetched {
             rev: acquired.rev,
             hash: acquired.entry.hash,
@@ -95,6 +113,7 @@ impl Fetcher for GitFetcher {
 
     fn fetch_path(&self, dir: &Path) -> io::Result<Fetched> {
         let entry = self.store.insert(dir)?;
+        self.note(&entry);
         Ok(Fetched {
             rev: entry.hash.clone(),
             hash: entry.hash,
@@ -732,6 +751,30 @@ mod tests {
 
     fn manifest(toml: &str) -> Manifest {
         Manifest::from_toml(toml).unwrap()
+    }
+
+    #[test]
+    fn the_production_fetcher_reports_an_entry_it_had_to_replace() {
+        let lib = TempDir::new().unwrap();
+        std::fs::write(lib.path().join("lib.scad"), "// lib").unwrap();
+        let temp = crate::store::TempStore::new();
+        let fetcher = GitFetcher::new(temp.store.clone());
+
+        let first = fetcher.fetch_path(lib.path()).unwrap();
+        assert!(fetcher.take_restored().is_empty());
+
+        // Someone writes into the stored copy.
+        let stored = first.path.join("lib.scad");
+        let mut permissions = std::fs::metadata(&stored).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&stored, permissions).unwrap();
+        std::fs::write(&stored, "// changed").unwrap();
+
+        let again = fetcher.fetch_path(lib.path()).unwrap();
+        assert_eq!(fetcher.take_restored(), std::slice::from_ref(&again.hash));
+        assert!(fetcher.take_restored().is_empty(), "handed over once");
+        assert_eq!(std::fs::read_to_string(&stored).unwrap(), "// lib");
     }
 
     #[test]

@@ -13,7 +13,7 @@ New here? Start with [Getting started](getting-started.md).
 
 ## How it works
 
-A dependency is resolved to an exact commit, its content is hashed and stored immutably
+A dependency is resolved to an exact commit, its content is hashed and stored read-only
 under that hash in a per-user store, and `sync` builds a per-project environment
 (`.scadman/env/`) that exposes each library under its own name, linked to the store, with
 `OPENSCADPATH` pointing at it. So a library's own `include <BOSL2/…>`
@@ -38,8 +38,9 @@ against real libraries (BOSL2, NopSCADlib, MCAD, dotSCAD, Round-Anything) plus a
   Unicode filename normalization can still change a content hash in edge cases.
 - Path dependencies are a local-development convenience, not a reproducible pin.
 - Nothing prunes the store yet
-  ([#96](https://github.com/CameronBrooks11/scadman/issues/96)); it is safe to delete,
-  and the next `sync` fetches what the lockfile needs.
+  ([#96](https://github.com/CameronBrooks11/scadman/issues/96)); it is safe to delete
+  ([how](manifest.md#deleting-the-store)), and the next `sync` fetches what the lockfile
+  needs.
 
 Known bugs are on the [issue tracker](https://github.com/CameronBrooks11/scadman/issues);
 planned work is in the

@@ -6,6 +6,34 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A library's stored copy can no longer be changed through a project** (#140). Every
+  project that locks the same content shares one copy in the store, and
+  `.scadman/env/` leads straight to it, so a write there changed the library for all of
+  them: an edit, or Python leaving `__pycache__` beside a library's scripts when they
+  ran from its folder. `sync` and `doctor` reported nothing, and a fresh `lock` of the
+  same commit in another project was handed the modified copy under the original hash.
+  - Stored copies are now read-only: their files on every OS, and on Linux and macOS
+    their directories too, so nothing can be added. A write fails where it is made;
+    Python skips its bytecode and carries on.
+  - A copy found writable is re-hashed before `sync`, `run` and `env` use it, and one
+    that no longer matches is fetched again and replaced, with a warning. A store filled
+    by an earlier scadman is checked this way on its first sync. `lock` and `update`
+    replace a modified copy the same way instead of reusing it. The check comes before
+    anything reads a copy's own `scadman.toml`.
+  - `scadman sync --verify` re-hashes every copy, protected or not, and `doctor` has a
+    `content:` line naming any that no longer matches. Use `--verify` where scadman
+    runs as root, which file permissions do not bind.
+
+### Changed
+
+- **Deleting the store takes one more step.** Its entries are read-only, so on Linux and
+  macOS `rm -rf` alone fails: run `chmod -R u+w` on the store first. On Windows use
+  `Remove-Item -Recurse -Force`. `docs/manifest.md` has both commands.
+- **`scadman-core`:** `StoreEntry` has a `restored` field, and `Store` gains `verify`,
+  `protect` and `is_protected`.
+
 ## [0.1.0-alpha.7] — 2026-11-15
 
 Seventh alpha. A setup action, so a project's CI installs scadman with one line.
