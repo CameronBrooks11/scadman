@@ -872,6 +872,74 @@ fn update_leaves_alone_the_copy_of_a_dependency_no_longer_declared() {
 }
 
 #[test]
+fn update_checks_a_held_copy_whose_dependency_was_renamed() {
+    // The held copies are found by source URL, not by name. Renaming a dependency in the
+    // manifest must not let `update <other>` read its modified copy: a `scadman.toml`
+    // there naming another library got that library fetched and locked.
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, rev) = make_lib(root.path());
+    let mut repos = Vec::new();
+    for name in ["other", "inject"] {
+        let dir = root.path().join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("x.scad"), "// x\n").unwrap();
+        git(&dir, &["init", "--quiet"]);
+        let head = commit_all(&dir, "init");
+        repos.push((dir, head));
+    }
+    let (other, _) = &repos[0];
+    let (inject, inject_rev) = &repos[1];
+    let manifest = |name: &str| {
+        format!(
+            "[project]\nname = \"app\"\n\n[dependencies]\n{name} = {{ git = \"{}\", rev = \"{rev}\" }}\nother = {{ git = \"{}\", branch = \"{}\" }}\n",
+            file_url(&lib),
+            file_url(other),
+            branch_of(other)
+        )
+    };
+    let proj = project_with(root.path(), &manifest("mylib"));
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    let lock = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    let hash = lock
+        .split("[[package]]")
+        .find(|block| block.contains("name = \"mylib\""))
+        .and_then(|block| block.lines().find(|l| l.starts_with("hash = ")))
+        .and_then(|l| l.split('"').nth(1))
+        .unwrap()
+        .to_string();
+    let entry = store.entry(&hash);
+    set_writable(&entry, true);
+    fs::write(
+        entry.join("scadman.toml"),
+        format!(
+            "[project]\nname = \"mylib\"\n\n[dependencies]\ninject = {{ git = \"{}\", rev = \"{inject_rev}\" }}\n",
+            file_url(inject)
+        ),
+    )
+    .unwrap();
+    fs::write(proj.join("scadman.toml"), manifest("renamed")).unwrap();
+
+    let update = scadman(&proj, store.path(), &["update", "other"]);
+    assert!(
+        update.status.success(),
+        "update: {}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&update.stderr).contains("restored"),
+        "the modified copy is replaced before it is read: {}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    let lock = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    assert!(
+        !lock.contains("inject"),
+        "nothing a modified copy names may reach the lockfile: {lock}"
+    );
+    assert!(!entry.join("scadman.toml").exists());
+}
+
+#[test]
 fn locking_in_another_project_does_not_hand_out_a_modified_copy() {
     // A second project locking the same commit fetched the right content, computed the
     // right hash, and was then given the modified copy already stored under it.

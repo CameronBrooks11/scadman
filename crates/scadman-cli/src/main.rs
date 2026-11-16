@@ -979,15 +979,7 @@ fn update_cmd(names: Vec<String>) -> Result<()> {
             }
         }
         let base_lock = previous.clone().unwrap_or_else(Lockfile::new);
-        // The dependencies held at their locked commits are served from the store. Only
-        // those the manifest still leads to: a copy nothing will read is left alone.
-        restore_modified(
-            &still_required(&manifest, &base_lock),
-            &store,
-            false,
-            &refresh,
-        )?;
-        let fetcher = CachedGitFetcher::new(&store, &base_lock, refresh);
+        let fetcher = CachedGitFetcher::new(&store, &base_lock, refresh, false);
         let lock = resolve(&manifest, &base, &fetcher)
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .to_lockfile();
@@ -1190,26 +1182,29 @@ fn has_path_dependency(manifest: &Manifest) -> bool {
 struct CachedGitFetcher {
     inner: GitFetcher,
     store: Store,
-    /// Git identity (canonical URL) → its locked `(rev, hash)`.
-    locked: HashMap<String, (String, String)>,
+    /// Git identity (canonical URL) → the package the lockfile pins it to.
+    locked: HashMap<String, lockfile::LockedPackage>,
     /// Git identities to force a fresh fetch for, bypassing the cache — how `scadman update`
     /// advances selected deps (empty for a path-triggered refresh, which holds all git deps).
     refresh: HashSet<String>,
+    /// Re-hash every copy before serving it, protected or not (`sync --verify`).
+    verify: bool,
 }
 
 impl CachedGitFetcher {
-    fn new(store: &Store, lock: &Lockfile, refresh: HashSet<String>) -> Self {
+    fn new(store: &Store, lock: &Lockfile, refresh: HashSet<String>, verify: bool) -> Self {
         let locked = lock
             .packages
             .iter()
             .filter(|p| !p.source.starts_with(lockfile::PATH_SOURCE_PREFIX))
-            .map(|p| (p.source.clone(), (p.rev.clone(), p.hash.clone())))
+            .map(|p| (p.source.clone(), p.clone()))
             .collect();
         Self {
             inner: GitFetcher::new(store.clone()),
             store: store.clone(),
             locked,
             refresh,
+            verify,
         }
     }
 }
@@ -1217,14 +1212,24 @@ impl CachedGitFetcher {
 impl Fetcher for CachedGitFetcher {
     fn fetch(&self, url: &str, reference: &GitRef) -> io::Result<Fetched> {
         if !self.refresh.contains(url)
-            && let Some((rev, hash)) = self.locked.get(url)
-            && holds_reference(reference, rev)
+            && let Some(package) = self.locked.get(url)
+            && holds_reference(reference, &package.rev)
         {
-            let path = self.store.path_for(hash);
+            let path = self.store.path_for(&package.hash);
             if path.exists() {
+                // Checked here, at the moment the copy is handed over: the resolver reads
+                // its `scadman.toml` next, and a modified copy must not get that far.
+                // Being keyed by URL like the cache itself, the check covers exactly the
+                // copies that are served, whatever the manifest calls them now.
+                let sound = stored_copy_is_sound(package, &self.store, self.verify)
+                    .map_err(|e| io::Error::other(format!("{e:#}")))?;
+                if !sound {
+                    fetch_locked(package, &self.store, true)
+                        .map_err(|e| io::Error::other(format!("{e:#}")))?;
+                }
                 return Ok(Fetched {
-                    rev: rev.clone(),
-                    hash: hash.clone(),
+                    rev: package.rev.clone(),
+                    hash: package.hash.clone(),
                     path,
                 });
             }
@@ -1276,10 +1281,7 @@ fn read_or_lock(store: &Store, verify: bool) -> Result<Lockfile> {
                     manifest::MANIFEST_FILE
                 );
             }
-            // The resolve below is served the locked git copies straight from the store
-            // and reads their manifests, so they are checked first.
-            restore_modified(&lock, store, verify, &HashSet::new())?;
-            let fetcher = CachedGitFetcher::new(store, &lock, HashSet::new());
+            let fetcher = CachedGitFetcher::new(store, &lock, HashSet::new(), verify);
             let base = std::env::current_dir().context("determine project directory")?;
             let refreshed = resolve(&manifest, &base, &fetcher)
                 .map_err(|e| anyhow::anyhow!("{e}"))?
@@ -1331,53 +1333,6 @@ fn ensure_stored(lock: &Lockfile, store: &Store, verify: bool) -> Result<()> {
         fetch_locked(package, store, present)?;
     }
     Ok(())
-}
-
-/// Replace the modified stored copy of every git package in `lock` that the coming resolve
-/// will be served from the store, before anything reads it. A resolve reads each
-/// library's own `scadman.toml` out of its stored copy, so a modified one must not get
-/// that far. `skip` names sources about to be fetched afresh anyway. Missing copies and
-/// path dependencies are the resolve's own business.
-fn restore_modified(
-    lock: &Lockfile,
-    store: &Store,
-    verify: bool,
-    skip: &HashSet<String>,
-) -> Result<()> {
-    for package in &lock.packages {
-        if package.source.starts_with(lockfile::PATH_SOURCE_PREFIX)
-            || skip.contains(&package.source)
-            || !store.path_for(&package.hash).exists()
-            || stored_copy_is_sound(package, store, verify)?
-        {
-            continue;
-        }
-        fetch_locked(package, store, true)?;
-    }
-    Ok(())
-}
-
-/// The part of `lock` the manifest still leads to: its dependencies, and whatever those
-/// depend on by the lock's own account. What `scadman remove` left behind is not in it.
-fn still_required(manifest: &Manifest, lock: &Lockfile) -> Lockfile {
-    let mut required = BTreeSet::new();
-    let mut pending: Vec<&str> = manifest.dependencies.keys().map(String::as_str).collect();
-    while let Some(name) = pending.pop() {
-        if required.insert(name)
-            && let Some(package) = lock.packages.iter().find(|p| p.name == name)
-        {
-            pending.extend(package.dependencies.iter().map(String::as_str));
-        }
-    }
-    Lockfile {
-        version: lock.version,
-        packages: lock
-            .packages
-            .iter()
-            .filter(|p| required.contains(p.name.as_str()))
-            .cloned()
-            .collect(),
-    }
 }
 
 /// Whether `package`'s stored copy can be used as it stands, protecting it if so.
