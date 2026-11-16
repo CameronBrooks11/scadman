@@ -22,8 +22,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use sha2::{Digest, Sha256};
 
 /// How many times an insert tries to swap its copy in while other processes are replacing
-/// the same entry, before giving up with the last error.
-const SWAP_ATTEMPTS: u32 = 8;
+/// the same entry, before giving up with the last error. With the pauses between attempts
+/// (see `swap_pause`) that is a few seconds in all.
+const SWAP_ATTEMPTS: u32 = 12;
+
+/// How long to wait before swap attempt `attempt`, for a writer with sequence number `seq`.
+///
+/// A failed swap means someone else is in the entry right now. On Windows a directory
+/// cannot be renamed while any file in it is open, so writers that all re-hash the entry
+/// and retry at once keep each other out; waiting longer each time, and by a different
+/// amount each, lets one of them through.
+fn swap_pause(attempt: u32, seq: u64) -> std::time::Duration {
+    let stagger = (u64::from(std::process::id()) + seq) % 7;
+    std::time::Duration::from_millis(u64::from(attempt.min(6)) * (20 + 5 * stagger))
+}
 
 /// Per-process counter making each staging directory name unique, so concurrent
 /// inserts of identical content never share (and clobber) a staging path.
@@ -138,6 +150,7 @@ impl Store {
         let mut restored = false;
         let mut last_error = None;
         for attempt in 0..SWAP_ATTEMPTS {
+            std::thread::sleep(swap_pause(attempt, seq));
             let mut moved_aside = None;
             if fs::symlink_metadata(&dest).is_ok() {
                 // Sound now: another process landed the same content first.
