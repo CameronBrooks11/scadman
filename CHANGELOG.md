@@ -6,6 +6,12 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.1.0-alpha.8] — 2026-11-15
+
+Eighth alpha. Stored libraries are read-only, and a copy that was changed is found and
+replaced. Check each project once with `scadman sync --verify` after upgrading, since
+earlier versions let a write through `.scadman/env/` reach the store unnoticed.
+
 ### Fixed
 
 - **A library's stored copy can no longer be changed through a project** (#140). Every
@@ -302,6 +308,7 @@ First public alpha. A working, project-oriented OpenSCAD dependency manager, gro
 GitHub-hosted git sources only; one version per identity; per-OS lockfile hashes; no hosted
 registry or native OpenSCAD-GUI integration yet. See the README's *Status & scope*.
 
+[0.1.0-alpha.8]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.8
 [0.1.0-alpha.7]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.7
 [0.1.0-alpha.6]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.6
 [0.1.0-alpha.5]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.5
