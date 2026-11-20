@@ -1249,9 +1249,17 @@ impl Fetcher for CachedGitFetcher {
             }
             // Held, with no copy to serve: fetch the locked commit. The reference itself
             // would be wherever a branch or tag points today.
-            return self
+            let fetched = self
                 .inner
-                .fetch(url, &GitRef::Rev(package.rev.clone()), submodules);
+                .fetch(url, &GitRef::Rev(package.rev.clone()), submodules)?;
+            // The same commit with the same setting is the content the lockfile pins.
+            if package.submodules == submodules && fetched.hash != package.hash {
+                return Err(io::Error::other(format!(
+                    "integrity: {} @ {} hashed to {} but the lockfile expects {}",
+                    package.name, package.rev, fetched.hash, package.hash
+                )));
+            }
+            return Ok(fetched);
         }
         self.inner.fetch(url, reference, submodules)
     }

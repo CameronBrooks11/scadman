@@ -815,6 +815,62 @@ fn a_lockfile_of_version_zero_is_refused() {
 }
 
 #[test]
+fn a_git_setting_that_skips_a_submodule_fails_the_lock() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    // The user's git is told that no submodule is active, so `submodule update` passes
+    // over every one and still succeeds.
+    let gitconfig = root.path().join("gitconfig");
+    fs::write(
+        &gitconfig,
+        "[protocol \"file\"]\n\tallow = always\n[submodule]\n\tactive = nomatch\n",
+    )
+    .unwrap();
+    let proj = project_asking_for_submodules(root.path());
+
+    let out = scadman_with_gitconfig(&proj, store.path(), &gitconfig, &["lock"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "lock should fail");
+    assert!(
+        stderr.contains("submodule `framework` was not fetched"),
+        "got: {stderr}"
+    );
+    assert!(!proj.join("scadman.lock").exists(), "nothing was locked");
+}
+
+#[test]
+fn a_held_dependency_refetched_into_an_empty_store_must_match_its_locked_hash() {
+    let root = TempDir::new().unwrap();
+    let gitconfig = local_submodule_gitconfig(root.path());
+    let (proj, _, _, _) = branch_project(root.path());
+    let first = StoreHome::new();
+    let lock = scadman_with_gitconfig(&proj, first.path(), &gitconfig, &["lock"]);
+    assert!(lock.status.success());
+
+    let text = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    let entry_start = text.find("name = \"mylib\"").expect("mylib is locked");
+    let hash_start = entry_start + text[entry_start..].find("hash = \"").unwrap() + 8;
+    let wrong = format!(
+        "{}{}{}",
+        &text[..hash_start],
+        "a".repeat(64),
+        &text[hash_start + 64..]
+    );
+    fs::write(proj.join("scadman.lock"), &wrong).unwrap();
+
+    let empty = StoreHome::new();
+    let out = scadman_with_gitconfig(&proj, empty.path(), &gitconfig, &["sync"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "sync should refuse: {stderr}");
+    assert!(stderr.contains("integrity"), "got: {stderr}");
+    assert_eq!(
+        fs::read_to_string(proj.join("scadman.lock")).unwrap(),
+        wrong,
+        "the lockfile is not rewritten to fit"
+    );
+}
+
+#[test]
 fn lock_and_sync_name_a_submodule_that_was_not_fetched() {
     let root = TempDir::new().unwrap();
     let store = StoreHome::new();

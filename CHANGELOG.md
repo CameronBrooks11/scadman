@@ -24,7 +24,7 @@ All notable changes to scadman are recorded here. Format loosely follows
   git dependencies at their locked commits. A held dependency with no copy in the store
   (a new machine, a cleared store) was fetched by its branch or tag name instead, so it
   moved to the current tip and the lockfile was rewritten. It is now fetched at the
-  locked commit.
+  locked commit, and refused if the content does not match the locked hash.
 - **A dependency's unfetched git submodules are named** (#121). Submodules are not
   fetched unless asked for, so a submodule arrived as an empty folder with nothing
   said, and a library that reads from it failed inside OpenSCAD. `lock`, `update` and

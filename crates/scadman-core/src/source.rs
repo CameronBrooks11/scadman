@@ -80,6 +80,16 @@ pub fn fetch_git(
                 "1",
             ],
         )?;
+        // `update` succeeds while passing over a submodule that the user's git config
+        // leaves inactive (`submodule.active`). The content would then depend on the
+        // machine, so check that none was left out; `status` marks those with `-`.
+        let status = capture_git(dir, &["submodule", "status", "--recursive"])?;
+        if let Some(skipped) = status.lines().find_map(|line| line.strip_prefix('-')) {
+            let path = skipped.split_whitespace().nth(1).unwrap_or(skipped);
+            return Err(io::Error::other(format!(
+                "git submodule `{path}` was not fetched: git passed over it (check `submodule.active` in your git config)"
+            )));
+        }
     }
 
     let rev = capture_git(dir, &["rev-parse", "HEAD"])?.trim().to_string();
