@@ -6,6 +6,11 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.1.0-alpha.9] — 2026-11-19
+
+Ninth alpha. A dependency's git submodules can be fetched, and one that is left out is
+named instead of arriving as a silently empty folder.
+
 ### Added
 
 - **`submodules = true` on a git dependency fetches its git submodules** (#121), also
@@ -333,6 +338,7 @@ First public alpha. A working, project-oriented OpenSCAD dependency manager, gro
 GitHub-hosted git sources only; one version per identity; per-OS lockfile hashes; no hosted
 registry or native OpenSCAD-GUI integration yet. See the README's *Status & scope*.
 
+[0.1.0-alpha.9]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.9
 [0.1.0-alpha.8]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.8
 [0.1.0-alpha.7]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.7
 [0.1.0-alpha.6]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.6
