@@ -83,6 +83,11 @@ pub struct GitDependency {
     /// only for libraries that need it — it globalizes that library's top-level filenames.
     #[serde(default, skip_serializing_if = "is_false")]
     pub on_path: bool,
+    /// Also fetch the repository's git submodules, at the commits it records for them.
+    /// Off by default: a submodule is often something the library's `.scad` files never
+    /// read, and one that cannot be fetched fails the whole dependency.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub submodules: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -329,6 +334,7 @@ local-lib = { path = "../local-lib" }
                 branch: None,
                 root: None,
                 on_path: false,
+                submodules: false,
             })
         );
         assert_eq!(
@@ -412,6 +418,7 @@ local-lib = { path = "../local-lib" }
                 branch: None,
                 root: Some("src".to_string()),
                 on_path: true,
+                submodules: false,
             }),
         );
         m.dependencies.insert(

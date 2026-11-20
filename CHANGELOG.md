@@ -6,14 +6,24 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- **`submodules = true` on a git dependency fetches its git submodules** (#121), also
+  as `scadman add --submodules`. Each submodule is fetched at the commit the dependency
+  records for it, nested ones included, so the locked `rev` still fixes the whole tree.
+  One that cannot be fetched fails `lock`. A request from any manifest in the graph
+  applies to that library for the whole project.
+- **Lockfile version 2**, written only when a library is locked with its submodules.
+  Other lockfiles are still written as version 1, which earlier releases read. A
+  version 2 lockfile is refused by 0.1.0-alpha.8 and earlier with a message to upgrade.
+
 ### Fixed
 
-- **A dependency's unfetched git submodules are named** (#121). scadman fetches a
-  dependency's own commit and not its submodules, so a submodule arrived as an empty
-  folder with nothing said, and a library that reads from it failed inside OpenSCAD.
-  `lock`, `update` and `sync` now warn with the folder and the submodule's URL. A
-  submodule whose repository is also a dependency is not warned about. Submodules are
-  still not fetched.
+- **A dependency's unfetched git submodules are named** (#121). Submodules are not
+  fetched unless asked for, so a submodule arrived as an empty folder with nothing
+  said, and a library that reads from it failed inside OpenSCAD. `lock`, `update` and
+  `sync` now warn with the folder, the submodule's URL and how to fetch it. A submodule
+  whose repository is also a dependency is not warned about.
 
 ## [0.1.0-alpha.8] — 2026-11-15
 

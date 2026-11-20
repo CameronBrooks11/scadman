@@ -60,6 +60,9 @@ enum Command {
         /// whose files import from their own root).
         #[arg(long)]
         on_path: bool,
+        /// Also fetch the repository's git submodules, at the commits it records.
+        #[arg(long, conflicts_with = "path")]
+        submodules: bool,
     },
     /// Remove a dependency from scadman.toml.
     Remove {
@@ -124,7 +127,8 @@ fn main() -> Result<()> {
             branch,
             root,
             on_path,
-        } => add_cmd(name, git, path, rev, tag, branch, root, on_path),
+            submodules,
+        } => add_cmd(name, git, path, rev, tag, branch, root, on_path, submodules),
         Command::Remove { name } => remove_cmd(name),
         Command::List => list_cmd(),
         Command::Lock => lock_cmd(),
@@ -721,10 +725,10 @@ fn load_lockfile() -> Result<Lockfile> {
 /// lockfile. Text with no readable version passes; parsing reports what is wrong with it.
 fn check_lockfile_version(text: &str) -> Result<()> {
     if let Some(found) = lockfile::declared_version(text)
-        && found != lockfile::LOCKFILE_VERSION
+        && !(1..=lockfile::LOCKFILE_VERSION).contains(&found)
     {
         bail!(
-            "{} is lockfile version {found} but this scadman understands {} — upgrade scadman",
+            "{} is lockfile version {found} but this scadman understands up to {} — upgrade scadman",
             lockfile::LOCKFILE_FILE,
             lockfile::LOCKFILE_VERSION
         );
@@ -757,6 +761,7 @@ fn add_cmd(
     branch: Option<String>,
     root: Option<String>,
     on_path: bool,
+    submodules: bool,
 ) -> Result<()> {
     // `scadman add <url>` is the natural first try for anyone coming from npm/cargo/pip.
     // The name-validation error it would otherwise hit reads as if the URL were malformed,
@@ -804,6 +809,9 @@ fn add_cmd(
         root,
         on_path,
     )?;
+    if let Some(Dependency::Git(git)) = manifest.dependencies.get_mut(&name) {
+        git.submodules = submodules;
+    }
     let text = manifest.to_toml().context("serialize manifest")?;
     fs::write(manifest::MANIFEST_FILE, text)
         .with_context(|| format!("write {}", manifest::MANIFEST_FILE))?;
@@ -907,6 +915,7 @@ fn add_dependency(
                 branch,
                 root,
                 on_path,
+                submodules: false,
             })
         }
         (None, None) => bail!("provide a git URL or --path <dir>"),
@@ -1213,10 +1222,14 @@ impl CachedGitFetcher {
 }
 
 impl Fetcher for CachedGitFetcher {
-    fn fetch(&self, url: &str, reference: &GitRef) -> io::Result<Fetched> {
+    fn fetch(&self, url: &str, reference: &GitRef, submodules: bool) -> io::Result<Fetched> {
+        // A copy locked without its submodules does not answer a request for them (and a
+        // copy with them is not what a request without them locks), so either goes to a
+        // real fetch.
         if !self.refresh.contains(url)
             && let Some(package) = self.locked.get(url)
             && holds_reference(reference, &package.rev)
+            && package.submodules == submodules
         {
             let path = self.store.path_for(&package.hash);
             if path.exists() {
@@ -1237,7 +1250,7 @@ impl Fetcher for CachedGitFetcher {
                 });
             }
         }
-        self.inner.fetch(url, reference)
+        self.inner.fetch(url, reference, submodules)
     }
 
     fn fetch_path(&self, dir: &Path) -> io::Result<Fetched> {
@@ -1369,16 +1382,17 @@ fn stored_copy_is_sound(
 /// the right content is in hand, so a failure here (no network, say) leaves it where it
 /// was.
 fn fetch_locked(package: &lockfile::LockedPackage, store: &Store, replacing: bool) -> Result<()> {
-    let acquired = fetch_git(store, &package.source, &package.rev).with_context(|| {
-        if replacing {
-            format!(
-                "`{}` was modified in the store, and restoring it from {} failed",
-                package.name, package.rev
-            )
-        } else {
-            format!("fetch {} @ {}", package.name, package.rev)
-        }
-    })?;
+    let acquired = fetch_git(store, &package.source, &package.rev, package.submodules)
+        .with_context(|| {
+            if replacing {
+                format!(
+                    "`{}` was modified in the store, and restoring it from {} failed",
+                    package.name, package.rev
+                )
+            } else {
+                format!("fetch {} @ {}", package.name, package.rev)
+            }
+        })?;
     if acquired.entry.hash != package.hash {
         bail!(
             "integrity: {} @ {} hashed to {} but the lockfile expects {}",
@@ -1413,9 +1427,10 @@ fn warn_restored_by(fetcher: &GitFetcher, lock: &Lockfile) {
     }
 }
 
-/// Name each git submodule a locked package declares and scadman left unfetched: its
-/// folder is empty, and a library that reads from it fails inside OpenSCAD. One that is
-/// also a dependency in its own right has been dealt with, and is not named.
+/// Name each git submodule a locked package declares and does not hold, which is every
+/// one of a dependency that did not ask for its submodules: the folder is empty, and a
+/// library that reads from it fails inside OpenSCAD. One that is also a dependency in its
+/// own right has been dealt with, and is not named.
 fn warn_unfetched_submodules(lock: &Lockfile, store: &Store) {
     let sources: HashSet<String> = lock
         .packages
@@ -1429,8 +1444,19 @@ fn warn_unfetched_submodules(lock: &Lockfile, store: &Store) {
                 continue;
             }
             let from = url.map(|url| format!(" ({url})")).unwrap_or_default();
+            // A path dependency is read from a working tree as it stands, so the
+            // submodule is the user's to check out there.
+            let remedy = if package.source.starts_with(lockfile::PATH_SOURCE_PREFIX) {
+                "check it out in that directory".to_string()
+            } else {
+                format!(
+                    "set `submodules = true` on `{}` in {}",
+                    package.name,
+                    manifest::MANIFEST_FILE
+                )
+            };
             eprintln!(
-                "warning: `{}` has a git submodule at `{}/`{from} that scadman does not fetch — that folder is empty",
+                "warning: `{}` has a git submodule at `{}/`{from} that was not fetched, so that folder is empty — to fetch it, {remedy}",
                 package.name, submodule.path
             );
         }

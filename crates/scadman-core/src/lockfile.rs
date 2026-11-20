@@ -9,8 +9,24 @@ use serde::{Deserialize, Serialize};
 /// The canonical lockfile filename.
 pub const LOCKFILE_FILE: &str = "scadman.lock";
 
-/// The lockfile format version, bumped on incompatible layout changes.
-pub const LOCKFILE_VERSION: u32 = 1;
+/// The newest lockfile format this scadman reads, bumped on incompatible layout changes.
+/// Version 2 added a package's `submodules` flag.
+pub const LOCKFILE_VERSION: u32 = 2;
+
+/// The format of a lockfile that uses nothing added since.
+const BASE_VERSION: u32 = 1;
+
+/// The format version a lockfile holding `packages` is written as: the oldest that can
+/// say what they need. A project that asks for nothing new keeps a lockfile the scadman
+/// before the format change still reads, and one that does is refused by it by version
+/// instead of being fetched without its submodules.
+pub fn version_for(packages: &[LockedPackage]) -> u32 {
+    if packages.iter().any(|p| p.submodules) {
+        2
+    } else {
+        BASE_VERSION
+    }
+}
 
 /// Prefix marking a [`LockedPackage::source`] as a local path dependency (the remainder is
 /// the canonicalized absolute path). Path sources are acquired from disk, not fetched.
@@ -46,6 +62,10 @@ pub struct LockedPackage {
     /// Whether the exposed root is also placed on `OPENSCADPATH` (default false).
     #[serde(default, skip_serializing_if = "is_false")]
     pub on_path: bool,
+    /// Whether the content includes the source's git submodules (default false). The
+    /// same commit hashes differently with and without them.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub submodules: bool,
 }
 
 fn root_default() -> String {
@@ -74,10 +94,10 @@ pub fn declared_version(text: &str) -> Option<u32> {
 }
 
 impl Lockfile {
-    /// An empty lockfile at the current format version.
+    /// An empty lockfile.
     pub fn new() -> Self {
         Self {
-            version: LOCKFILE_VERSION,
+            version: BASE_VERSION,
             packages: Vec::new(),
         }
     }
@@ -112,6 +132,7 @@ mod tests {
             dependencies: Vec::new(),
             root: ".".to_string(),
             on_path: false,
+            submodules: false,
         }
     }
 
@@ -128,9 +149,22 @@ mod tests {
     }
 
     #[test]
+    fn the_written_version_is_the_oldest_that_fits_the_packages() {
+        let plain = sample_package();
+        let with_submodules = LockedPackage {
+            submodules: true,
+            ..sample_package()
+        };
+        assert_eq!(version_for(&[]), 1);
+        assert_eq!(version_for(std::slice::from_ref(&plain)), 1);
+        assert_eq!(version_for(&[plain, with_submodules.clone()]), 2);
+        assert!(version_for(&[with_submodules]) <= LOCKFILE_VERSION);
+    }
+
+    #[test]
     fn new_lockfile_is_versioned_and_empty() {
         let lock = Lockfile::new();
-        assert_eq!(lock.version, LOCKFILE_VERSION);
+        assert_eq!(lock.version, BASE_VERSION);
         assert!(lock.packages.is_empty());
     }
 

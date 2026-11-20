@@ -42,6 +42,7 @@ A git dependency:
 | `branch` | | A branch. Locked to its tip at lock time; `scadman update` advances it. |
 | `root` | no | Subdirectory to expose instead of the repository root. See [library-roots.md](library-roots.md). |
 | `on_path` | no | Also put the exposed directory on `OPENSCADPATH`. See [library-roots.md](library-roots.md). |
+| `submodules` | no | Also fetch the repository's git submodules. See [Submodules](#submodules). |
 
 Give exactly one of `rev`, `tag` and `branch`; an entry with none, or with more than
 one, is refused at lock time.
@@ -52,6 +53,31 @@ the same optional `root` and `on_path`. See [path-dependencies.md](path-dependen
 An unknown table or key anywhere in your `scadman.toml` is an error, so a misspelled
 `[dependencies]` header or key cannot be silently ignored. A bare version string
 (`BOSL2 = "^2.0"`) is reserved for a future registry and is refused at lock time.
+
+### Submodules
+
+A git dependency's submodules are left out by default: their folders are empty, and
+`lock`, `update` and `sync` warn about each one. Set `submodules = true` on the
+dependency to fetch them:
+
+```toml
+SBC_Case_Builder = { git = "https://github.com/hominoids/SBC_Case_Builder", rev = "5979914bc23aa0d85da592be4c37b6ed97c20ddf", submodules = true }
+```
+
+- Every submodule is fetched at the commit the dependency records for it, and so are
+  the submodules of those. The dependency's own `rev` therefore still fixes the whole
+  tree, and the lockfile needs no extra commits.
+- It is all or nothing. A submodule that cannot be fetched fails `lock`, with git's own
+  message: a repository that is gone, or an `ssh` URL (`git@github.com:…`) on a
+  machine with no key for it.
+- If any `scadman.toml` among your dependencies asks for a library's submodules, they
+  are fetched for every library that uses it, since a library has one copy per project.
+- The content hash covers the submodule files, so the same commit locks to a different
+  `hash` with and without them.
+- Removing `submodules = true` is not detected; run `scadman lock` afterwards.
+
+A path dependency is read from its directory as it stands, so check its submodules out
+there yourself.
 
 ### One version per library
 
@@ -103,10 +129,13 @@ hash = "…"
 | `hash` | SHA-256 of the library's files: the key of its copy in the store. |
 | `dependencies` | Names of the libraries this one declares, if any. |
 | `root`, `on_path` | Copied from the manifest when set. |
+| `submodules` | `true` when the content includes the library's git submodules. |
 
-`version` is the lockfile format. Every command refuses a lockfile whose version it
-does not know, and `lock` and `update` will not overwrite one: upgrade scadman, or
-delete the file to write a fresh one.
+`version` is the lockfile format. It is `2` when any library is locked with its
+submodules and `1` otherwise, so a project that does not use submodules keeps a
+lockfile that scadman 0.1.0-alpha.8 and earlier still read. Every command refuses a
+lockfile whose version it does not know, and `lock` and `update` will not overwrite
+one: upgrade scadman, or delete the file to write a fresh one.
 
 On a machine that does not have a library's content yet, `sync` fetches `rev` from
 `source` and refuses to continue if the content does not hash to `hash`.
@@ -118,7 +147,8 @@ rewrite it when a path dependency's content has changed. They stop and ask for
 - the manifest declares a library the lockfile lacks;
 - the lockfile holds a library the manifest no longer leads to, as after
   `scadman remove`;
-- a library's source, `rev`, `root` or `on_path` no longer matches.
+- a library's source, `rev`, `root` or `on_path` no longer matches;
+- the manifest asks for a library's submodules and the lockfile has it without them.
 
 One edit is not detected: a changed `tag` or `branch` name on an unchanged URL. Running
 `scadman lock` after every manifest edit covers it.
