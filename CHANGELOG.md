@@ -6,6 +6,15 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A dependency's unfetched git submodules are named** (#121). scadman fetches a
+  dependency's own commit and not its submodules, so a submodule arrived as an empty
+  folder with nothing said, and a library that reads from it failed inside OpenSCAD.
+  `lock`, `update` and `sync` now warn with the folder and the submodule's URL. A
+  submodule whose repository is also a dependency is not warned about. Submodules are
+  still not fetched.
+
 ## [0.1.0-alpha.8] — 2026-11-15
 
 Eighth alpha. Stored libraries are read-only, and a copy that was changed is found and

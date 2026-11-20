@@ -13,6 +13,7 @@ pub mod manifest;
 pub mod resolver;
 pub mod source;
 pub mod store;
+pub mod submodules;
 
 pub use environment::{Environment, build as build_environment};
 pub use imports::{Installed, UnmetImport, unmet_imports};
@@ -24,3 +25,4 @@ pub use resolver::{
 };
 pub use source::{Acquired, fetch_git};
 pub use store::{Store, StoreEntry, content_hash, validate_content_hash};
+pub use submodules::{Submodule, unfetched_submodules};

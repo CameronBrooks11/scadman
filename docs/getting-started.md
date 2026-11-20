@@ -107,7 +107,7 @@ lives.
 | `scadman list` | Show declared dependencies and the commit each is locked to. |
 | `scadman lock` | Resolve every dependency and write `scadman.lock`. |
 | `scadman update [name…]` | Move branch and tag dependencies to their newest commit, all or just the named ones, and report what moved. |
-| `scadman sync [--verify]` | Build the project environment from the lockfile and warn about undeclared imports. `--verify` re-hashes every stored library first and restores any that was modified. |
+| `scadman sync [--verify]` | Build the project environment from the lockfile and warn about undeclared imports and unfetched submodules. `--verify` re-hashes every stored library first and restores any that was modified. |
 | `scadman run -- <openscad args>` | Sync, then run OpenSCAD with the environment on `OPENSCADPATH`. |
 | `scadman env [--json \| --write-vscode]` | Sync, then print the `OPENSCADPATH` for editors and tools. |
 | `scadman graph [--json]` | Print the locked dependency graph. |
@@ -141,6 +141,21 @@ warning: `agentscad` imports `scad-utils/` (in mesh.scad) but it is not in your 
 
 `scadman add` each named library, then `lock` and `sync` again. Imports of a bare
 filename (`use <file.scad>`) can't be attributed to a library and aren't flagged.
+
+## Git submodules
+
+scadman fetches a dependency's own commit and not the submodules it links to, so a
+submodule arrives as an empty folder. `lock`, `update` and `sync` name each one:
+
+```
+warning: `SBC_Case_Builder` has a git submodule at `SBC_Model_Framework/` (https://github.com/hominoids/SBC_Model_Framework.git) that scadman does not fetch — that folder is empty
+```
+
+If the library reads from that folder, `scadman add` the submodule's repository under
+the folder's name, pinned to the commit the library expects. The library's imports of
+it can then resolve through `OPENSCADPATH`, and the warning stops once the repository
+is a dependency. A submodule the library's `.scad` files never read (a wiki, PCB
+footprints) can be ignored.
 
 ## Minimum OpenSCAD version
 
