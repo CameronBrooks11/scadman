@@ -6,6 +6,9 @@
 //! branch or tag can be pinned in the lockfile. The `.git` directory is dropped by the
 //! store, so what lands is the working tree alone.
 //!
+//! A revision's git submodules are fetched only on request. Each is pinned by the commit
+//! that links to it, so the one resolved SHA still fixes the whole tree.
+//!
 //! Every git command runs with line-ending conversion off (`core.autocrlf=false`,
 //! `core.eol=lf`), so a checkout is the commit's bytes whatever the user's git config
 //! says, and its content hash is the same on every OS.
@@ -34,7 +37,16 @@ pub struct Acquired {
 /// (GitHub does; some self-hosted servers do not) — tags and branches work everywhere.
 /// A non-shallow fallback for restrictive hosts is deferred until non-GitHub sources are
 /// in scope.
-pub fn fetch_git(store: &Store, url: &str, reference: &str) -> io::Result<Acquired> {
+///
+/// With `submodules` set, the revision's submodules are fetched too, nested ones
+/// included, each at the commit recorded for it; one that cannot be fetched fails the
+/// whole fetch. Without it their folders are left empty.
+pub fn fetch_git(
+    store: &Store,
+    url: &str,
+    reference: &str,
+    submodules: bool,
+) -> io::Result<Acquired> {
     let scratch = TempDir::new()?;
     let dir = scratch.path();
 
@@ -52,6 +64,33 @@ pub fn fetch_git(store: &Store, url: &str, reference: &str) -> io::Result<Acquir
         ],
     )?;
     run_git(dir, &["checkout", "--quiet", "--detach", "FETCH_HEAD"])?;
+    if submodules {
+        run_git(
+            dir,
+            &[
+                "submodule",
+                "--quiet",
+                "update",
+                "--init",
+                // The library's own `update = none` (or `rebase`, `merge`) is a default
+                // for people working in it, not for a request to have the content.
+                "--checkout",
+                "--recursive",
+                "--depth",
+                "1",
+            ],
+        )?;
+        // `update` succeeds while passing over a submodule that the user's git config
+        // leaves inactive (`submodule.active`). The content would then depend on the
+        // machine, so check that none was left out; `status` marks those with `-`.
+        let status = capture_git(dir, &["submodule", "status", "--recursive"])?;
+        if let Some(skipped) = status.lines().find_map(|line| line.strip_prefix('-')) {
+            let path = skipped.split_whitespace().nth(1).unwrap_or(skipped);
+            return Err(io::Error::other(format!(
+                "git submodule `{path}` was not fetched: git passed over it (check `submodule.active` in your git config)"
+            )));
+        }
+    }
 
     let rev = capture_git(dir, &["rev-parse", "HEAD"])?.trim().to_string();
     let entry = store.insert(dir)?;
@@ -148,7 +187,7 @@ mod tests {
         let temp = crate::store::TempStore::new();
         let store = &temp.store;
 
-        let acquired = fetch_git(store, &url, &rev).unwrap();
+        let acquired = fetch_git(store, &url, &rev, false).unwrap();
         assert_eq!(acquired.rev, rev);
         assert_eq!(
             fs::read_to_string(acquired.entry.path.join("std.scad")).unwrap(),
@@ -165,7 +204,12 @@ mod tests {
         let temp = crate::store::TempStore::new();
         let store = &temp.store;
 
-        let err = fetch_git(store, &url, "0000000000000000000000000000000000000000");
+        let err = fetch_git(
+            store,
+            &url,
+            "0000000000000000000000000000000000000000",
+            false,
+        );
         assert!(err.is_err());
     }
 
@@ -178,7 +222,7 @@ mod tests {
         let temp = crate::store::TempStore::new();
         let store = &temp.store;
 
-        let err = fetch_git(store, &url, "--not-a-real-ref");
+        let err = fetch_git(store, &url, "--not-a-real-ref", false);
         assert!(err.is_err());
     }
 }

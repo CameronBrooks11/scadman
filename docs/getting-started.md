@@ -101,7 +101,7 @@ lives.
 | Command | What it does |
 |---|---|
 | `scadman init [--name N]` | Create `scadman.toml` and ignore `.scadman/`. |
-| `scadman add <name> <git-url>` | Declare a git dependency. `--tag`, `--branch` or `--rev` picks the ref; with none, it tracks the remote's default branch. |
+| `scadman add <name> <git-url>` | Declare a git dependency. `--tag`, `--branch` or `--rev` picks the ref; with none, it tracks the remote's default branch. `--submodules` also fetches its git submodules. |
 | `scadman add <name> --path <dir>` | Declare a local directory as a dependency. |
 | `scadman remove <name>` | Drop a dependency from `scadman.toml`. |
 | `scadman list` | Show declared dependencies and the commit each is locked to. |
@@ -144,18 +144,30 @@ filename (`use <file.scad>`) can't be attributed to a library and aren't flagged
 
 ## Git submodules
 
-scadman fetches a dependency's own commit and not the submodules it links to, so a
-submodule arrives as an empty folder. `lock`, `update` and `sync` name each one:
+A dependency's git submodules are not fetched unless you ask, so by default a submodule
+arrives as an empty folder. `lock`, `update` and `sync` name each one:
 
 ```
-warning: `SBC_Case_Builder` has a git submodule at `SBC_Model_Framework/` (https://github.com/hominoids/SBC_Model_Framework.git) that scadman does not fetch — that folder is empty
+warning: `SBC_Case_Builder` has a git submodule at `SBC_Model_Framework/` (https://github.com/hominoids/SBC_Model_Framework.git) that was not fetched, so that folder is empty — to fetch it, set `submodules = true` on `SBC_Case_Builder` in scadman.toml
 ```
 
-If the library reads from that folder, `scadman add` the submodule's repository under
-the folder's name, pinned to the commit the library expects. The library's imports of
-it can then resolve through `OPENSCADPATH`, and the warning stops once the repository
-is a dependency. A submodule the library's `.scad` files never read (a wiki, PCB
-footprints) can be ignored.
+If the library reads from that folder, add `submodules = true` to its entry in
+`scadman.toml` and run `scadman lock`:
+
+```toml
+SBC_Case_Builder = { git = "https://github.com/hominoids/SBC_Case_Builder", rev = "5979914bc23aa0d85da592be4c37b6ed97c20ddf", submodules = true }
+```
+
+For a library you have not added yet, `scadman add <name> <git-url> --submodules` writes
+the key. Every submodule is then fetched at the commit the library records for it, nested ones
+included. See [`submodules`](manifest.md#submodules) for what that changes in the
+lockfile and when it fails.
+
+A submodule the library's `.scad` files never read (a wiki, PCB footprints) can be left
+unfetched. The warning also stops when the submodule's repository is a dependency of
+its own, which is the other way to supply it: `scadman add` it under the folder's name,
+pinned to the commit the library expects, and the library's imports of it can resolve
+through `OPENSCADPATH`.
 
 ## Minimum OpenSCAD version
 

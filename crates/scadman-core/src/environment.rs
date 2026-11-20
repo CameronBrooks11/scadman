@@ -162,6 +162,7 @@ mod tests {
             dependencies: Vec::new(),
             root: ".".to_string(),
             on_path: false,
+            submodules: false,
         }
     }
 
@@ -338,6 +339,7 @@ mod tests {
             dependencies: Vec::new(),
             root: "src".to_string(),
             on_path: true,
+            submodules: false,
         });
 
         let env_dir = TempDir::new().unwrap();

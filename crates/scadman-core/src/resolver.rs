@@ -13,7 +13,7 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::lockfile::{LOCKFILE_VERSION, LockedPackage, Lockfile, PATH_SOURCE_PREFIX};
+use crate::lockfile::{LockedPackage, Lockfile, PATH_SOURCE_PREFIX, version_for};
 use crate::manifest::{
     Dependency, GitDependency, MANIFEST_FILE, Manifest, PathDependency, validate_commit_hash,
     validate_library_root, validate_package_name,
@@ -60,8 +60,8 @@ impl GitRef {
 /// Acquires dependency content into the store. Abstracted so the resolver is testable
 /// without a network or real git.
 pub trait Fetcher {
-    /// Acquire a git source at a reference.
-    fn fetch(&self, url: &str, reference: &GitRef) -> io::Result<Fetched>;
+    /// Acquire a git source at a reference, with its git submodules if `submodules`.
+    fn fetch(&self, url: &str, reference: &GitRef, submodules: bool) -> io::Result<Fetched>;
     /// Acquire a local directory (a path dependency). The `rev` of the result is the
     /// content hash — a path dependency has no revision, only whatever it contains now.
     fn fetch_path(&self, dir: &Path) -> io::Result<Fetched>;
@@ -96,13 +96,13 @@ impl GitFetcher {
 }
 
 impl Fetcher for GitFetcher {
-    fn fetch(&self, url: &str, reference: &GitRef) -> io::Result<Fetched> {
+    fn fetch(&self, url: &str, reference: &GitRef, submodules: bool) -> io::Result<Fetched> {
         // git cannot fetch an abbreviated commit; say so rather than hand it over and
         // relay "couldn't find remote ref".
         if let GitRef::Rev(rev) = reference {
             validate_commit_hash(rev).map_err(io::Error::other)?;
         }
-        let acquired = fetch_git(&self.store, url, reference.as_str())?;
+        let acquired = fetch_git(&self.store, url, reference.as_str(), submodules)?;
         self.note(&acquired.entry);
         Ok(Fetched {
             rev: acquired.rev,
@@ -136,6 +136,8 @@ pub struct Resolved {
     pub root: String,
     /// Whether the exposed root is also placed on `OPENSCADPATH`.
     pub on_path: bool,
+    /// Whether the content includes the source's git submodules.
+    pub submodules: bool,
     /// The chain of names that first introduced this package (for conflict diagnostics).
     pub required_by: Vec<String>,
 }
@@ -149,21 +151,23 @@ pub struct ResolvedSet {
 impl ResolvedSet {
     /// Project the resolution into a lockfile.
     pub fn to_lockfile(&self) -> Lockfile {
+        let packages: Vec<LockedPackage> = self
+            .packages
+            .iter()
+            .map(|p| LockedPackage {
+                name: p.name.clone(),
+                source: p.source.clone(),
+                rev: p.rev.clone(),
+                hash: p.hash.clone(),
+                dependencies: p.dependencies.clone(),
+                root: p.root.clone(),
+                on_path: p.on_path,
+                submodules: p.submodules,
+            })
+            .collect();
         Lockfile {
-            version: LOCKFILE_VERSION,
-            packages: self
-                .packages
-                .iter()
-                .map(|p| LockedPackage {
-                    name: p.name.clone(),
-                    source: p.source.clone(),
-                    rev: p.rev.clone(),
-                    hash: p.hash.clone(),
-                    dependencies: p.dependencies.clone(),
-                    root: p.root.clone(),
-                    on_path: p.on_path,
-                })
-                .collect(),
+            version: version_for(&packages),
+            packages,
         }
     }
 }
@@ -336,6 +340,11 @@ pub fn lock_staleness(manifest: &Manifest, lock: &Lockfile) -> Option<String> {
                 if pkg.on_path != git.on_path {
                     return Some(format!("`{name}` on_path changed to {}", git.on_path));
                 }
+                // One way only: the lock may hold submodules this manifest did not ask
+                // for, because a dependency's own manifest asked.
+                if git.submodules && !pkg.submodules {
+                    return Some(format!("`{name}` now asks for its submodules"));
+                }
             }
         }
     }
@@ -449,8 +458,14 @@ impl Resolution<'_> {
         // How to acquire this dependency's content, kept owned so the fetch happens after
         // the name-binding check (below) without borrowing `dep`.
         enum FetchInput {
-            Git { url: String, reference: GitRef },
-            Path { dir: PathBuf },
+            Git {
+                url: String,
+                reference: GitRef,
+                submodules: bool,
+            },
+            Path {
+                dir: PathBuf,
+            },
         }
 
         // Identity (the "one version per identity" key and lockfile source), exposure knobs,
@@ -458,9 +473,20 @@ impl Resolution<'_> {
         let (identity, root, on_path, input) = match dep {
             Dependency::Git(git) => {
                 let identity = canonical_url(&git.git);
+                // One identity has one content, so a request for submodules holds for
+                // everyone who names the source: asked for once, anywhere in the graph,
+                // they are fetched. An earlier request is carried forward here so that a
+                // later requester who did not ask fetches the same content again, not a
+                // second copy without them.
+                let submodules = git.submodules
+                    || self
+                        .by_identity
+                        .get(&identity)
+                        .is_some_and(|existing| existing.submodules);
                 let input = FetchInput::Git {
                     url: identity.clone(),
                     reference: git_reference(name, git)?,
+                    submodules,
                 };
                 (
                     identity,
@@ -509,8 +535,16 @@ impl Resolution<'_> {
         self.name_to_identity
             .insert(name.to_string(), identity.clone());
 
+        let mut with_submodules = false;
         let fetched = match input {
-            FetchInput::Git { url, reference } => self.fetcher.fetch(&url, &reference),
+            FetchInput::Git {
+                url,
+                reference,
+                submodules,
+            } => {
+                with_submodules = submodules;
+                self.fetcher.fetch(&url, &reference, submodules)
+            }
             FetchInput::Path { dir } => self.fetcher.fetch_path(&dir),
         }
         .map_err(|error| ResolveError::Fetch {
@@ -529,7 +563,7 @@ impl Resolution<'_> {
         }
 
         // Already resolved this identity — must agree on revision and on exposed name.
-        if let Some(existing) = self.by_identity.get(&identity) {
+        if let Some(existing) = self.by_identity.get_mut(&identity) {
             if existing.rev != fetched.rev {
                 return Err(ResolveError::Conflict(Conflict::Version {
                     identity,
@@ -545,6 +579,12 @@ impl Resolution<'_> {
                     name_a: existing.name.clone(),
                     name_b: name.to_string(),
                 }));
+            }
+            // A later requester asked for the submodules an earlier one did not: the
+            // content just fetched, which has them, replaces the earlier one.
+            if with_submodules && !existing.submodules {
+                existing.submodules = true;
+                existing.hash = fetched.hash;
             }
             return Ok(());
         }
@@ -563,6 +603,7 @@ impl Resolution<'_> {
                 dependencies: dep_names,
                 root,
                 on_path,
+                submodules: with_submodules,
                 required_by: required_by.clone(),
             },
         );
@@ -696,7 +737,7 @@ mod tests {
     }
 
     impl Fetcher for FakeFetcher {
-        fn fetch(&self, url: &str, reference: &GitRef) -> io::Result<Fetched> {
+        fn fetch(&self, url: &str, reference: &GitRef, submodules: bool) -> io::Result<Fetched> {
             let reference = reference.as_str();
             let pkg = self
                 .pkgs
@@ -727,7 +768,11 @@ mod tests {
 
             Ok(Fetched {
                 rev: rev.clone(),
-                hash: format!("hash-{rev}"),
+                hash: if submodules {
+                    format!("hash-{rev}-with-submodules")
+                } else {
+                    format!("hash-{rev}")
+                },
                 path,
             })
         }
@@ -775,6 +820,68 @@ mod tests {
         assert_eq!(fetcher.take_restored(), std::slice::from_ref(&again.hash));
         assert!(fetcher.take_restored().is_empty(), "handed over once");
         assert_eq!(std::fs::read_to_string(&stored).unwrap(), "// lib");
+    }
+
+    const WITH_X: &str = "[project]\nname = \"w\"\n[dependencies]\nX = { git = \"https://h/X\", rev = \"r1\", submodules = true }\n";
+
+    /// X is named twice, once asking for its submodules, by `asker`: a name that sorts
+    /// before `X` or after it, so that either request is the first one visited.
+    fn resolve_x_with_one_request_for_submodules(asker: &str) -> Lockfile {
+        let fetcher = FakeFetcher::new()
+            .pkg("https://h/X", &[("r1", "sha_x")], None)
+            .pkg("https://h/asker", &[("r1", "sha_w")], Some(WITH_X));
+        let root = manifest(&format!(
+            "[project]\nname = \"p\"\n[dependencies]\nX = {{ git = \"https://h/X\", rev = \"r1\" }}\n{asker} = {{ git = \"https://h/asker\", rev = \"r1\" }}\n"
+        ));
+        resolve(&root, Path::new("."), &fetcher)
+            .unwrap()
+            .to_lockfile()
+    }
+
+    #[test]
+    fn one_request_for_submodules_holds_whichever_requester_comes_first() {
+        for asker in ["A", "Z"] {
+            let lock = resolve_x_with_one_request_for_submodules(asker);
+            let x = lock.packages.iter().find(|p| p.name == "X").unwrap();
+            assert!(x.submodules, "asked for by {asker}");
+            assert_eq!(x.hash, "hash-sha_x-with-submodules", "asked for by {asker}");
+            assert_eq!(lock.version, 2);
+        }
+    }
+
+    #[test]
+    fn a_resolution_without_submodules_is_written_in_the_earlier_format() {
+        let fetcher = FakeFetcher::new().pkg("https://h/X", &[("r1", "sha_x")], None);
+        let root = manifest(
+            "[project]\nname = \"p\"\n[dependencies]\nX = { git = \"https://h/X\", rev = \"r1\" }\n",
+        );
+        let lock = resolve(&root, Path::new("."), &fetcher)
+            .unwrap()
+            .to_lockfile();
+        assert!(!lock.packages[0].submodules);
+        assert_eq!(lock.packages[0].hash, "hash-sha_x");
+        assert_eq!(lock.version, 1);
+    }
+
+    #[test]
+    fn lock_staleness_sees_a_request_for_submodules_the_lock_lacks() {
+        let asking = manifest(
+            "[project]\nname = \"p\"\n[dependencies]\nX = { git = \"https://h/X\", rev = \"sha_x\", submodules = true }\n",
+        );
+        let plain = manifest(
+            "[project]\nname = \"p\"\n[dependencies]\nX = { git = \"https://h/X\", rev = \"sha_x\" }\n",
+        );
+        let lock_of = |m: &Manifest| {
+            let fetcher = FakeFetcher::new().pkg("https://h/X", &[("sha_x", "sha_x")], None);
+            resolve(m, Path::new("."), &fetcher).unwrap().to_lockfile()
+        };
+        assert_eq!(
+            lock_staleness(&asking, &lock_of(&plain)).as_deref(),
+            Some("`X` now asks for its submodules")
+        );
+        assert_eq!(lock_staleness(&asking, &lock_of(&asking)), None);
+        // The lock may hold submodules a dependency's own manifest asked for.
+        assert_eq!(lock_staleness(&plain, &lock_of(&asking)), None);
     }
 
     #[test]
@@ -1016,6 +1123,7 @@ mod tests {
                 dependencies: Vec::new(),
                 root: ".".to_string(),
                 on_path: false,
+                submodules: false,
             });
             lock
         };
@@ -1041,6 +1149,7 @@ mod tests {
             dependencies: deps.iter().map(|d| d.to_string()).collect(),
             root: ".".to_string(),
             on_path: false,
+            submodules: false,
         }
     }
 
@@ -1098,6 +1207,7 @@ mod tests {
             dependencies: Vec::new(),
             root: ".".to_string(), // manifest now wants `src` → stale
             on_path: false,
+            submodules: false,
         });
         assert!(lock_staleness(&root, &lock).is_some());
     }
@@ -1116,6 +1226,7 @@ mod tests {
                 branch: None,
                 root: None,
                 on_path: false,
+                submodules: false,
             }),
         );
         let err = resolve(&root, Path::new("."), &FakeFetcher::new()).unwrap_err();
