@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 use scadman_core::{
     Dependency, Environment, Fetched, Fetcher, GitDependency, GitFetcher, GitRef, Installed,
     Lockfile, Manifest, Store, build_environment, canonical_url, fetch_git, lock_staleness,
-    lockfile, manifest, resolve, unmet_imports, validate_content_hash,
+    lockfile, manifest, resolve, unfetched_submodules, unmet_imports, validate_content_hash,
 };
 use serde::Serialize;
 
@@ -933,6 +933,7 @@ fn lock_cmd() -> Result<()> {
     let store = open_store()?;
     let lock = resolve_lock(&manifest, &store)?;
     write_lock(&lock)?;
+    warn_unfetched_submodules(&lock, &store);
     let n = lock.packages.len();
     println!(
         "Locked {n} {} → {}",
@@ -988,6 +989,7 @@ fn update_cmd(names: Vec<String>) -> Result<()> {
     };
 
     write_lock(&updated)?;
+    warn_unfetched_submodules(&updated, &store);
     report_update(previous.as_ref(), &updated);
     Ok(())
 }
@@ -1083,7 +1085,8 @@ fn warn_on_path_collisions(env: &Environment) {
 
 fn sync_cmd(verify: bool) -> Result<Environment> {
     let store = open_store()?;
-    let (_, env) = prepare_environment(&store, verify)?;
+    let (lock, env) = prepare_environment(&store, verify)?;
+    warn_unfetched_submodules(&lock, &store);
     let n = env.exposed.len();
     println!(
         "Synced {n} {} → {}",
@@ -1406,6 +1409,30 @@ fn warn_restored_by(fetcher: &GitFetcher, lock: &Lockfile) {
         // What a resolve fetched is in the lock it produced, so the name is there.
         if let Some(package) = lock.packages.iter().find(|p| p.hash == hash) {
             warn_restored(&package.name, &hash);
+        }
+    }
+}
+
+/// Name each git submodule a locked package declares and scadman left unfetched: its
+/// folder is empty, and a library that reads from it fails inside OpenSCAD. One that is
+/// also a dependency in its own right has been dealt with, and is not named.
+fn warn_unfetched_submodules(lock: &Lockfile, store: &Store) {
+    let sources: HashSet<String> = lock
+        .packages
+        .iter()
+        .map(|p| canonical_url(&p.source))
+        .collect();
+    for package in &lock.packages {
+        for submodule in unfetched_submodules(&store.path_for(&package.hash)) {
+            let url = submodule.url.as_deref();
+            if url.is_some_and(|url| sources.contains(&canonical_url(url))) {
+                continue;
+            }
+            let from = url.map(|url| format!(" ({url})")).unwrap_or_default();
+            eprintln!(
+                "warning: `{}` has a git submodule at `{}/`{from} that scadman does not fetch — that folder is empty",
+                package.name, submodule.path
+            );
         }
     }
 }

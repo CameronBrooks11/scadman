@@ -191,6 +191,142 @@ fn make_lib(root: &Path) -> (PathBuf, String) {
     (lib, rev)
 }
 
+/// `make_lib`'s repo with a second repo, `framework`, added as a submodule at
+/// `framework/`; returns the library, its HEAD commit, and the submodule's URL and commit.
+fn make_lib_with_submodule(root: &Path) -> (PathBuf, String, String, String) {
+    let framework = root.join("framework-src");
+    fs::create_dir_all(&framework).unwrap();
+    fs::write(
+        framework.join("models.scad"),
+        "module model() { cube(2); }\n",
+    )
+    .unwrap();
+    git(&framework, &["init", "--quiet"]);
+    git(&framework, &["add", "-A"]);
+    commit(&framework, "init");
+    let framework_url = file_url(&framework);
+
+    let (lib, _) = make_lib(root);
+    // Git refuses a local-path submodule unless told otherwise; this is the test's own
+    // git, not scadman's.
+    git(
+        &lib,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "--quiet",
+            "add",
+            &framework_url,
+            "framework",
+        ],
+    );
+    commit(&lib, "add framework");
+    (lib.clone(), head(&lib), framework_url, head(&framework))
+}
+
+fn commit(dir: &Path, message: &str) {
+    git(
+        dir,
+        &[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "--quiet",
+            "-m",
+            message,
+        ],
+    );
+}
+
+fn head(dir: &Path) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn lock_and_sync_name_a_submodule_that_was_not_fetched() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, rev, framework_url, _) = make_lib_with_submodule(root.path());
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\n",
+            file_url(&lib)
+        ),
+    );
+    let expected = format!(
+        "warning: `mylib` has a git submodule at `framework/` ({framework_url}) that scadman does not fetch"
+    );
+
+    for command in ["lock", "sync", "update"] {
+        let out = scadman(&proj, store.path(), &[command]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{command} failed: {stderr}");
+        assert!(
+            stderr.contains(&expected),
+            "{command} should name the submodule, got: {stderr}"
+        );
+    }
+
+    let folder = proj.join(".scadman/env/mylib/framework");
+    assert_eq!(
+        fs::read_dir(&folder).unwrap().count(),
+        0,
+        "the submodule's folder is there and empty"
+    );
+}
+
+#[test]
+fn a_submodule_that_is_also_a_dependency_is_not_warned_about() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, rev, framework_url, framework_rev) = make_lib_with_submodule(root.path());
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\nframework = {{ git = \"{framework_url}\", rev = \"{framework_rev}\" }}\n",
+            file_url(&lib)
+        ),
+    );
+
+    for command in ["lock", "sync"] {
+        let out = scadman(&proj, store.path(), &[command]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{command} failed: {stderr}");
+        assert!(
+            !stderr.contains("submodule"),
+            "{command} should stay quiet, got: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn a_library_without_submodules_gets_no_submodule_warning() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, rev) = make_lib(root.path());
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\n",
+            file_url(&lib)
+        ),
+    );
+    let out = scadman(&proj, store.path(), &["sync"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "sync failed: {stderr}");
+    assert!(!stderr.contains("submodule"), "got: {stderr}");
+}
+
 fn project_with(root: &Path, toml: &str) -> PathBuf {
     let proj = root.join("proj");
     fs::create_dir_all(&proj).unwrap();
