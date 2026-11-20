@@ -562,6 +562,258 @@ fn a_path_dependency_with_an_empty_submodule_is_told_to_check_it_out() {
     );
 }
 
+fn current_branch(dir: &Path) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// The commit `name` is locked to in `proj`'s lockfile.
+fn locked_rev(proj: &Path, name: &str) -> String {
+    let lock = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    let entry = lock
+        .split("[[package]]")
+        .find(|entry| entry.contains(&format!("name = \"{name}\"")))
+        .unwrap_or_else(|| panic!("`{name}` is not locked: {lock}"));
+    entry
+        .lines()
+        .find_map(|line| line.strip_prefix("rev = "))
+        .expect("a rev line")
+        .trim_matches('"')
+        .to_string()
+}
+
+/// A project that follows `make_lib_with_submodule`'s library by branch, beside a path
+/// dependency (which makes every `sync` resolve again, holding git dependencies at their
+/// locked commits). Returns the project, the library, and the manifest text with and
+/// without `submodules = true` on the library.
+fn branch_project(root: &Path) -> (PathBuf, PathBuf, String, String) {
+    let (lib, _, _, _) = make_lib_with_submodule(root);
+    let local = root.join("local");
+    fs::create_dir_all(&local).unwrap();
+    fs::write(local.join("local.scad"), "module local() {}\n").unwrap();
+    let manifest = |flag: &str| {
+        format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nlocal = {{ path = \"../local\" }}\nmylib = {{ git = \"{}\", branch = \"{}\"{flag} }}\n",
+            file_url(&lib),
+            current_branch(&lib)
+        )
+    };
+    let (with, without) = (manifest(", submodules = true"), manifest(""));
+    let proj = project_with(root, &without);
+    (proj, lib, with, without)
+}
+
+/// Give the library a newer commit than the one a project locked.
+fn advance(lib: &Path) {
+    fs::write(lib.join("greet.scad"), "module greet() { cube(5); }\n").unwrap();
+    git(lib, &["add", "-A"]);
+    commit(lib, "move on");
+}
+
+#[test]
+fn asking_for_submodules_keeps_a_branch_dependency_at_its_locked_commit() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let gitconfig = local_submodule_gitconfig(root.path());
+    let (proj, lib, with, _) = branch_project(root.path());
+    let lock = scadman_with_gitconfig(&proj, store.path(), &gitconfig, &["lock"]);
+    assert!(lock.status.success());
+    let locked = locked_rev(&proj, "mylib");
+    advance(&lib);
+
+    // `local` is advanced; `mylib` is held, though the copy it is held as no longer
+    // answers the request.
+    fs::write(proj.join("scadman.toml"), &with).unwrap();
+    let out = scadman_with_gitconfig(&proj, store.path(), &gitconfig, &["sync"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("`mylib` now asks for its submodules"),
+        "a git pin change still needs a lock: {stderr}"
+    );
+    let lock = scadman_with_gitconfig(&proj, store.path(), &gitconfig, &["lock"]);
+    assert!(lock.status.success());
+    let relocked = locked_rev(&proj, "mylib");
+    assert_ne!(relocked, locked, "`lock` follows the branch");
+
+    // From here the flag is dropped again, and `sync` re-resolves because of `local`.
+    advance_again(&lib);
+    fs::write(
+        proj.join("scadman.toml"),
+        with.replace(", submodules = true", ""),
+    )
+    .unwrap();
+    let out = scadman_with_gitconfig(&proj, store.path(), &gitconfig, &["sync"]);
+    assert!(
+        out.status.success(),
+        "sync failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(locked_rev(&proj, "mylib"), relocked, "held at its commit");
+    let lock = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    assert!(!lock.contains("submodules"), "lock: {lock}");
+    assert_eq!(
+        fs::read_dir(proj.join(".scadman/env/mylib/framework"))
+            .unwrap()
+            .count(),
+        0,
+        "the content is the commit's without its submodules"
+    );
+}
+
+fn advance_again(lib: &Path) {
+    fs::write(lib.join("greet.scad"), "module greet() { cube(6); }\n").unwrap();
+    git(lib, &["add", "-A"]);
+    commit(lib, "move on again");
+}
+
+#[test]
+fn update_of_another_dependency_keeps_a_held_branch_at_its_commit_when_the_flag_changes() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let gitconfig = local_submodule_gitconfig(root.path());
+    let (proj, lib, with, _) = branch_project(root.path());
+    let lock = scadman_with_gitconfig(&proj, store.path(), &gitconfig, &["lock"]);
+    assert!(lock.status.success());
+    let locked = locked_rev(&proj, "mylib");
+    advance(&lib);
+
+    // Only possible through `update <other>`: `sync` would ask for a lock first.
+    let other = root.path().join("other");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("other.scad"), "module other() {}\n").unwrap();
+    git(&other, &["init", "--quiet", "--initial-branch", "main"]);
+    git(&other, &["add", "-A"]);
+    commit(&other, "init");
+    let with_other = |text: &str| {
+        format!(
+            "{text}other = {{ git = \"{}\", branch = \"main\" }}\n",
+            file_url(&other)
+        )
+    };
+    fs::write(
+        proj.join("scadman.toml"),
+        with_other(&with.replace(", submodules = true", "")),
+    )
+    .unwrap();
+    let out = scadman_with_gitconfig(&proj, store.path(), &gitconfig, &["update", "other"]);
+    assert!(out.status.success());
+    assert_eq!(locked_rev(&proj, "mylib"), locked);
+
+    fs::write(proj.join("scadman.toml"), with_other(&with)).unwrap();
+    let out = scadman_with_gitconfig(&proj, store.path(), &gitconfig, &["update", "other"]);
+    assert!(
+        out.status.success(),
+        "update failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(locked_rev(&proj, "mylib"), locked, "held at its commit");
+    let lock = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    assert!(lock.contains("submodules = true"), "lock: {lock}");
+}
+
+#[test]
+fn a_held_branch_dependency_missing_from_the_store_is_fetched_at_its_locked_commit() {
+    let root = TempDir::new().unwrap();
+    let gitconfig = local_submodule_gitconfig(root.path());
+    let (proj, lib, _, _) = branch_project(root.path());
+    let first = StoreHome::new();
+    let lock = scadman_with_gitconfig(&proj, first.path(), &gitconfig, &["lock"]);
+    assert!(lock.status.success());
+    let locked = locked_rev(&proj, "mylib");
+    advance(&lib);
+
+    let empty = StoreHome::new();
+    let out = scadman_with_gitconfig(&proj, empty.path(), &gitconfig, &["sync"]);
+    assert!(
+        out.status.success(),
+        "sync failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(locked_rev(&proj, "mylib"), locked, "held at its commit");
+}
+
+#[test]
+fn a_submodule_the_library_marks_update_none_is_still_fetched_on_request() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let gitconfig = local_submodule_gitconfig(root.path());
+    let (lib, _, _, _) = make_lib_with_submodule(root.path());
+    let gitmodules = fs::read_to_string(lib.join(".gitmodules")).unwrap();
+    fs::write(
+        lib.join(".gitmodules"),
+        format!(
+            "{}\tupdate = none\n",
+            gitmodules.trim_end_matches('\n').to_owned() + "\n"
+        ),
+    )
+    .unwrap();
+    git(&lib, &["add", "-A"]);
+    commit(&lib, "do not update by default");
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{}\", submodules = true }}\n",
+            file_url(&lib),
+            head(&lib)
+        ),
+    );
+
+    let out = scadman_with_gitconfig(&proj, store.path(), &gitconfig, &["sync"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "sync failed: {stderr}");
+    assert_eq!(
+        fs::read_to_string(proj.join(".scadman/env/mylib/framework/models.scad")).unwrap(),
+        MODEL
+    );
+}
+
+#[test]
+fn a_library_locked_with_its_submodules_is_not_told_to_ask_for_them() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let gitconfig = local_submodule_gitconfig(root.path());
+    let (lib, _, _, _) = make_lib_with_submodule(root.path());
+    // A section left behind for a submodule the repository no longer links to.
+    let gitmodules = fs::read_to_string(lib.join(".gitmodules")).unwrap();
+    fs::write(
+        lib.join(".gitmodules"),
+        format!("{gitmodules}[submodule \"gone\"]\n\tpath = gone\n\turl = https://example.invalid/gone.git\n"),
+    )
+    .unwrap();
+    git(&lib, &["add", "-A"]);
+    commit(&lib, "leave a stale section");
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{}\", submodules = true }}\n",
+            file_url(&lib),
+            head(&lib)
+        ),
+    );
+
+    let out = scadman_with_gitconfig(&proj, store.path(), &gitconfig, &["sync"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "sync failed: {stderr}");
+    assert!(!stderr.contains("submodule"), "got: {stderr}");
+}
+
+#[test]
+fn a_lockfile_of_version_zero_is_refused() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let proj = project_with(root.path(), "[project]\nname = \"demo\"\n");
+    fs::write(proj.join("scadman.lock"), "version = 0\n").unwrap();
+    let out = scadman(&proj, store.path(), &["sync"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("lockfile version 0"), "got: {err}");
+}
+
 #[test]
 fn lock_and_sync_name_a_submodule_that_was_not_fetched() {
     let root = TempDir::new().unwrap();

@@ -80,7 +80,9 @@ fn stays_inside(path: &str) -> bool {
 fn is_empty(dir: &Path) -> bool {
     match fs::read_dir(dir) {
         Ok(mut entries) => entries.next().is_none(),
-        Err(_) => true,
+        // Missing is empty. Anything else there (a file, something unreadable) is not
+        // an unfetched submodule.
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
     }
 }
 
@@ -121,6 +123,14 @@ mod tests {
         let dir = package(ONE);
         fs::create_dir_all(dir.path().join("lib/framework")).unwrap();
         fs::write(dir.path().join("lib/framework/a.scad"), "").unwrap();
+        assert_eq!(unfetched_submodules(dir.path()), Vec::new());
+    }
+
+    #[test]
+    fn a_declared_path_that_is_a_file_is_not_a_missing_submodule() {
+        let dir = package(ONE);
+        fs::create_dir_all(dir.path().join("lib")).unwrap();
+        fs::write(dir.path().join("lib/framework"), "").unwrap();
         assert_eq!(unfetched_submodules(dir.path()), Vec::new());
     }
 

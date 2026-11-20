@@ -72,6 +72,9 @@ pub fn fetch_git(
                 "--quiet",
                 "update",
                 "--init",
+                // The library's own `update = none` (or `rebase`, `merge`) is a default
+                // for people working in it, not for a request to have the content.
+                "--checkout",
                 "--recursive",
                 "--depth",
                 "1",

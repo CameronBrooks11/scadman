@@ -1223,16 +1223,14 @@ impl CachedGitFetcher {
 
 impl Fetcher for CachedGitFetcher {
     fn fetch(&self, url: &str, reference: &GitRef, submodules: bool) -> io::Result<Fetched> {
-        // A copy locked without its submodules does not answer a request for them (and a
-        // copy with them is not what a request without them locks), so either goes to a
-        // real fetch.
         if !self.refresh.contains(url)
             && let Some(package) = self.locked.get(url)
             && holds_reference(reference, &package.rev)
-            && package.submodules == submodules
         {
             let path = self.store.path_for(&package.hash);
-            if path.exists() {
+            // A copy locked without its submodules does not answer a request for them,
+            // and one with them is not what a request without them locks.
+            if package.submodules == submodules && path.exists() {
                 // Checked here, at the moment the copy is handed over: the resolver reads
                 // its `scadman.toml` next, and a modified copy must not get that far.
                 // Being keyed by URL like the cache itself, the check covers exactly the
@@ -1249,6 +1247,11 @@ impl Fetcher for CachedGitFetcher {
                     path,
                 });
             }
+            // Held, with no copy to serve: fetch the locked commit. The reference itself
+            // would be wherever a branch or tag points today.
+            return self
+                .inner
+                .fetch(url, &GitRef::Rev(package.rev.clone()), submodules);
         }
         self.inner.fetch(url, reference, submodules)
     }
@@ -1437,7 +1440,9 @@ fn warn_unfetched_submodules(lock: &Lockfile, store: &Store) {
         .iter()
         .map(|p| canonical_url(&p.source))
         .collect();
-    for package in &lock.packages {
+    // A package locked with its submodules has all that git would fetch; anything its
+    // `.gitmodules` still lists is a leftover section, and asking again changes nothing.
+    for package in lock.packages.iter().filter(|p| !p.submodules) {
         for submodule in unfetched_submodules(&store.path_for(&package.hash)) {
             let url = submodule.url.as_deref();
             if url.is_some_and(|url| sources.contains(&canonical_url(url))) {

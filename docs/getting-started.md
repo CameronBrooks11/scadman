@@ -151,14 +151,15 @@ arrives as an empty folder. `lock`, `update` and `sync` name each one:
 warning: `SBC_Case_Builder` has a git submodule at `SBC_Model_Framework/` (https://github.com/hominoids/SBC_Model_Framework.git) that was not fetched, so that folder is empty — to fetch it, set `submodules = true` on `SBC_Case_Builder` in scadman.toml
 ```
 
-If the library reads from that folder, ask for its submodules and lock again:
+If the library reads from that folder, add `submodules = true` to its entry in
+`scadman.toml` and run `scadman lock`:
 
-```sh
-scadman add SBC_Case_Builder https://github.com/hominoids/SBC_Case_Builder --submodules
-scadman lock
+```toml
+SBC_Case_Builder = { git = "https://github.com/hominoids/SBC_Case_Builder", rev = "5979914bc23aa0d85da592be4c37b6ed97c20ddf", submodules = true }
 ```
 
-Every submodule is then fetched at the commit the library records for it, nested ones
+For a library you have not added yet, `scadman add <name> <git-url> --submodules` writes
+the key. Every submodule is then fetched at the commit the library records for it, nested ones
 included. See [`submodules`](manifest.md#submodules) for what that changes in the
 lockfile and when it fails.
 

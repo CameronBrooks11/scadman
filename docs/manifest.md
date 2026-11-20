@@ -69,12 +69,15 @@ SBC_Case_Builder = { git = "https://github.com/hominoids/SBC_Case_Builder", rev 
   tree, and the lockfile needs no extra commits.
 - It is all or nothing. A submodule that cannot be fetched fails `lock`, with git's own
   message: a repository that is gone, or an `ssh` URL (`git@github.com:…`) on a
-  machine with no key for it.
+  machine with no key for it. A library's own `update = none` setting for a submodule
+  does not exempt it.
 - If any `scadman.toml` among your dependencies asks for a library's submodules, they
   are fetched for every library that uses it, since a library has one copy per project.
 - The content hash covers the submodule files, so the same commit locks to a different
   `hash` with and without them.
-- Removing `submodules = true` is not detected; run `scadman lock` afterwards.
+- Removing `submodules = true` does not make the lockfile out of date. Run
+  `scadman lock` to lock the library without them. (A project with a path dependency
+  resolves again on every `sync`, and drops them then, at the same commit.)
 
 A path dependency is read from its directory as it stands, so check its submodules out
 there yourself.
