@@ -90,6 +90,10 @@ The action installs the release it is used at, checked against that release's
 `sync: "true"` it also syncs the project (`working-directory`, default `.`) and exports
 `OPENSCADPATH` for the steps after it. Pass `version:` to install another release.
 
+GitHub lists a public project under **Used by** on this repository when a file in
+its `.github/workflows/` uses the action and the dependency graph is on in the
+project's security settings. A project that installs scadman another way is not listed.
+
 ## Use
 
 ```sh
