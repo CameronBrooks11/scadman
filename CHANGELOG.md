@@ -13,6 +13,11 @@ All notable changes to scadman are recorded here. Format loosely follows
   runs, `lock` and `sync` fetched and checked out a dependency inside that repository:
   its HEAD was moved, an `origin` remote added and its index replaced. `add` likewise
   read that repository's config when looking up a default branch.
+- **`add` and `remove` keep your comments and layout in `scadman.toml`** (#150). They
+  rewrote the whole file from its parsed contents, which deleted every comment. They now
+  change only the entry asked about. A new entry is written as one line in
+  `[dependencies]`, the form the documentation shows, unless the file already gives each
+  dependency its own section.
 
 ## [0.1.0-alpha.9] — 2026-11-19
 
