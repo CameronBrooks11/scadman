@@ -6,6 +6,14 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **scadman's git commands no longer act on the repository git names in its
+  environment** (#148). With `GIT_DIR` set, as git sets it for some of the commands it
+  runs, `lock` and `sync` fetched and checked out a dependency inside that repository:
+  its HEAD was moved, an `origin` remote added and its index replaced. `add` likewise
+  read that repository's config when looking up a default branch.
+
 ## [0.1.0-alpha.9] — 2026-11-19
 
 Ninth alpha. A dependency's git submodules can be fetched, and one that is left out is

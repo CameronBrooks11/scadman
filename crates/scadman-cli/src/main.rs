@@ -854,7 +854,7 @@ fn suggested_name(url: &str) -> Option<String> {
 /// The remote's current default branch (the target of its `HEAD` symref), via
 /// `git ls-remote`. Used when `scadman add <url>` is given no explicit ref.
 fn default_branch(url: &str) -> Result<String> {
-    let output = ProcCommand::new("git")
+    let output = scadman_core::source::git_command()
         .args(["ls-remote", "--symref", "--", url, "HEAD"])
         .output()
         .context("run `git ls-remote` (is git on PATH?)")?;
