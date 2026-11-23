@@ -102,8 +102,36 @@ pub fn fetch_git(
 /// `core.eol`; either would change the content, and so the hash, per machine.
 const NO_EOL_CONVERSION: [&str; 4] = ["-c", "core.autocrlf=false", "-c", "core.eol=lf"];
 
+/// The variables git uses to say which repository a command works in. Git sets some of
+/// them for the commands it runs on the user's behalf, such as a hook, and a git started
+/// from there would act on that repository whatever directory it was given.
+const CALLERS_REPOSITORY: [&str; 12] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_SHALLOW_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+];
+
+/// A `git` command that works where it is told to, not in a repository named by the
+/// environment scadman was started in. Every git process scadman runs starts here.
+pub fn git_command() -> Command {
+    let mut command = Command::new("git");
+    for variable in CALLERS_REPOSITORY {
+        command.env_remove(variable);
+    }
+    command
+}
+
 fn git(cwd: &Path, args: &[&str]) -> io::Result<std::process::Output> {
-    Command::new("git")
+    git_command()
         .args(NO_EOL_CONVERSION)
         .arg("-C")
         .arg(cwd)
