@@ -118,6 +118,12 @@ lives.
 | `scadman graph [--json]` | Print the locked dependency graph. |
 | `scadman doctor` | Report on OpenSCAD, the store, the manifest, the lockfile, whether the stored libraries are unmodified, and the environment. |
 
+`scadman run` exits with the code OpenSCAD exited with, so a script can treat it as
+`openscad` itself. If scadman fails before OpenSCAD has started (a stale lockfile, a
+dependency it cannot fetch, no OpenSCAD found) it prints the error and exits 125. Every
+other command exits 0 on success and 1 on failure; a mistake in the command line itself
+exits 2.
+
 A branch or tag is pinned to an exact commit at lock time and stays there until you run
 `scadman update`. A `--rev` pin never moves; give it the full 40-character commit hash,
 since an abbreviated one is refused.

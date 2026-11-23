@@ -3169,3 +3169,69 @@ fn openscad_env_names_the_binary_for_doctor_and_run() {
     let args = fs::read_to_string(root.path().join("my-openscad.args")).unwrap();
     assert_eq!(args.trim(), "demo.scad -o out.stl");
 }
+
+/// Run `scadman run demo.scad` in `proj` with `script` standing in for OpenSCAD.
+#[cfg(unix)]
+fn run_with_openscad_script(root: &Path, proj: &Path, store: &StoreHome, script: &str) -> Output {
+    use std::os::unix::fs::PermissionsExt;
+    let fake = root.join("my-openscad");
+    fs::write(&fake, script).unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    Command::new(env!("CARGO_BIN_EXE_scadman"))
+        .current_dir(proj)
+        .env("XDG_DATA_HOME", store.path())
+        .env("OPENSCAD", &fake)
+        .args(["run", "demo.scad"])
+        .output()
+        .expect("run scadman")
+}
+
+#[cfg(unix)]
+#[test]
+fn run_exits_with_the_code_openscad_exited_with() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let proj = project_with(root.path(), "[project]\nname = \"d\"\n");
+
+    let run = run_with_openscad_script(root.path(), &proj, &store, "#!/bin/sh\nexit 7\n");
+    assert_eq!(run.status.code(), Some(7));
+    // OpenSCAD has said what went wrong; scadman did not fail and reports no error.
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(!stderr.contains("Error"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn run_reports_a_signal_that_ended_openscad_the_way_a_shell_does() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let proj = project_with(root.path(), "[project]\nname = \"d\"\n");
+
+    let run = run_with_openscad_script(root.path(), &proj, &store, "#!/bin/sh\nkill -TERM $$\n");
+    assert_eq!(run.status.code(), Some(128 + 15));
+}
+
+#[cfg(unix)]
+#[test]
+fn run_exits_125_when_scadman_fails_before_openscad_starts() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    // A manifest that cannot be read: OpenSCAD must not be started, and the exit code
+    // must not be one a caller would take for OpenSCAD's own.
+    let proj = project_with(root.path(), "this is not toml\n");
+
+    let run = run_with_openscad_script(
+        root.path(),
+        &proj,
+        &store,
+        "#!/bin/sh\ntouch \"$0.started\"\nexit 1\n",
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(125),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(String::from_utf8_lossy(&run.stderr).contains("Error"));
+    assert!(!root.path().join("my-openscad.started").exists());
+}

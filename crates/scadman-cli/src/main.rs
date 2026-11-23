@@ -137,7 +137,13 @@ fn main() -> Result<()> {
         Command::Env { json, write_vscode } => env_cmd(json, write_vscode),
         Command::Doctor => doctor_cmd(),
         Command::Graph { json } => graph_cmd(json),
-        Command::Run { args } => run_cmd(args),
+        Command::Run { args } => {
+            let code = run_cmd(args).unwrap_or_else(|error| {
+                eprintln!("Error: {error:?}");
+                RUN_FAILED_BEFORE_OPENSCAD
+            });
+            std::process::exit(code)
+        }
     }
 }
 
@@ -1105,7 +1111,9 @@ fn sync_cmd(verify: bool) -> Result<Environment> {
     Ok(env)
 }
 
-fn run_cmd(args: Vec<String>) -> Result<()> {
+/// Run OpenSCAD with the project environment and return the code to exit with: the one
+/// OpenSCAD ended with.
+fn run_cmd(args: Vec<String>) -> Result<i32> {
     let store = open_store()?;
     warn_openscad_too_old();
     let (_, env) = prepare_environment(&store, false)?;
@@ -1124,11 +1132,26 @@ fn run_cmd(args: Vec<String>) -> Result<()> {
                 program.display()
             )
         })?;
-    if !status.success() {
-        bail!("openscad exited with {status}");
-    }
-    Ok(())
+    Ok(exit_code_of(status))
 }
+
+/// The exit code that reports how a child ended: its own, or 128 plus the signal that
+/// ended it, as a shell reports one.
+fn exit_code_of(status: std::process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+    status.code().unwrap_or(1)
+}
+
+/// What `run` exits with when scadman fails before OpenSCAD has run, so that a caller
+/// can tell it from any code OpenSCAD returns. `env`, `timeout` and `nohup` use the same
+/// number for the same case.
+const RUN_FAILED_BEFORE_OPENSCAD: i32 = 125;
 
 /// Warn (to stderr) if the project declares a minimum OpenSCAD version the installed one
 /// doesn't meet. Advisory only — the render may still work, and compatibility is really
