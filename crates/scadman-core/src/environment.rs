@@ -9,8 +9,11 @@
 //! OpenSCAD 2021.01 there cannot read through a junction or a symlink. Pointing `OPENSCADPATH` at
 //! that directory makes `<Name/…>` resolve to the pinned content.
 //!
-//! The environment is rebuilt from scratch each time, so it always reflects the lockfile
-//! exactly and never accumulates stale entries.
+//! Each build brings the environment into line with the lockfile: an entry that is
+//! already right is left alone, one that is not is replaced, and one the lockfile no
+//! longer has is removed. Everything is checked before anything is changed, so a build
+//! that cannot succeed leaves the environment as it was, and builds of one project wait
+//! for each other, so commands run side by side do not undo one another's work.
 
 use std::fs;
 use std::io;
@@ -46,6 +49,15 @@ impl Environment {
 /// content in `store`. Returns an error if a locked package is missing from the store
 /// (acquire it first) — the environment must reflect the lockfile exactly.
 pub fn build(lock: &Lockfile, store: &Store, env_root: &Path) -> io::Result<Environment> {
+    build_as(Exposure::HERE, lock, store, env_root)
+}
+
+fn build_as(
+    exposure: Exposure,
+    lock: &Lockfile,
+    store: &Store,
+    env_root: &Path,
+) -> io::Result<Environment> {
     // The lockfile is untrusted input (it travels with a cloned repo). This is the single
     // chokepoint every package name, root and hash funnels through to the filesystem, so
     // validate here regardless of whether the resolver already did — and validate all of
@@ -57,13 +69,8 @@ pub fn build(lock: &Lockfile, store: &Store, env_root: &Path) -> io::Result<Envi
             .map_err(|reason| io::Error::other(format!("package `{}`: {reason}", package.name)))?;
     }
 
-    if env_root.exists() {
-        fs::remove_dir_all(env_root)?;
-    }
-    fs::create_dir_all(env_root)?;
-
-    let mut exposed = Vec::with_capacity(lock.packages.len());
-    let mut on_path = Vec::new();
+    // Find what each entry must point at, and that it is there, before changing anything.
+    let mut targets = Vec::with_capacity(lock.packages.len());
     for package in &lock.packages {
         let entry = store.path_for(&package.hash);
         if !entry.exists() {
@@ -79,13 +86,25 @@ pub fn build(lock: &Lockfile, store: &Store, env_root: &Path) -> io::Result<Envi
                 package.name, package.root
             )));
         }
+        targets.push(target);
+    }
+
+    let _held = hold(env_root)?;
+    fs::create_dir_all(env_root)?;
+
+    let mut exposed = Vec::with_capacity(lock.packages.len());
+    let mut on_path = Vec::new();
+    for (package, target) in lock.packages.iter().zip(&targets) {
         let link = env_root.join(&package.name);
-        link_dir(&target, &link)?;
+        if !exposure.is_current(env_root, &package.name, target) {
+            exposure.expose(env_root, &package.name, target)?;
+        }
         exposed.push(package.name.clone());
         if package.on_path {
             on_path.push(link);
         }
     }
+    exposure.remove_all_but(env_root, &exposed)?;
     exposed.sort();
     on_path.sort();
 
@@ -99,23 +118,152 @@ pub fn build(lock: &Lockfile, store: &Store, env_root: &Path) -> io::Result<Envi
     })
 }
 
-/// Link `link` to the directory `target`.
-#[cfg(unix)]
-fn link_dir(target: &Path, link: &Path) -> io::Result<()> {
-    std::os::unix::fs::symlink(target, link)
+/// A path beside the environment directory, named after it: where a build keeps what
+/// must not be seen as a library.
+fn beside(env_root: &Path, suffix: &str) -> PathBuf {
+    let mut name = env_root.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    env_root.with_file_name(name)
 }
 
-/// Expose the directory `target` at `link` as real files: OpenSCAD 2021.01 on Windows
-/// crashes reading a junction or a symlink once a library includes its own files (#132).
-#[cfg(windows)]
-fn link_dir(target: &Path, link: &Path) -> io::Result<()> {
-    mirror_tree(target, link)
+/// Wait for any other build of this environment to finish, and keep others out until
+/// the returned file is dropped. The operating system releases the hold if the process
+/// dies. A file system that cannot lock is used without one.
+fn hold(env_root: &Path) -> io::Result<fs::File> {
+    let path = beside(env_root, ".lock");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
+    match file.lock() {
+        Err(error) if error.kind() != io::ErrorKind::Unsupported => Err(error),
+        _ => Ok(file),
+    }
+}
+
+/// Remove whatever is at `path`: a link, a file or a directory tree. Nothing there is fine.
+fn remove_entry(path: &Path) -> io::Result<()> {
+    let removed = match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+        Ok(found) if found.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+    };
+    match removed {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
+/// How a package's directory is made to appear in the environment.
+#[derive(Debug, Clone, Copy)]
+enum Exposure {
+    /// A symlink to the stored directory.
+    #[cfg(unix)]
+    Symlink,
+    /// A copy of the directory tree whose files are hard links to the stored ones.
+    /// OpenSCAD 2021.01 on Windows crashes reading a junction or a symlink once a library
+    /// includes its own files (#132).
+    #[cfg_attr(unix, allow(dead_code))]
+    Mirror,
+}
+
+impl Exposure {
+    /// What this platform uses.
+    #[cfg(unix)]
+    const HERE: Self = Self::Symlink;
+    #[cfg(windows)]
+    const HERE: Self = Self::Mirror;
+
+    /// Where a mirrored entry records the directory it was made from. A tree of hard
+    /// links does not say where it came from, so this is how a later build knows.
+    fn stamp(env_root: &Path, name: &str) -> PathBuf {
+        beside(env_root, ".stamps").join(name)
+    }
+
+    /// Whether the entry `name` already shows `target`.
+    fn is_current(self, env_root: &Path, name: &str, target: &Path) -> bool {
+        let link = env_root.join(name);
+        match self {
+            #[cfg(unix)]
+            Self::Symlink => fs::read_link(link).is_ok_and(|to| to == target),
+            Self::Mirror => {
+                fs::symlink_metadata(link).is_ok_and(|found| found.is_dir())
+                    && fs::read_to_string(Self::stamp(env_root, name))
+                        .is_ok_and(|from| Path::new(&from) == target)
+            }
+        }
+    }
+
+    /// Make the entry `name` show `target`, replacing whatever is there. The new entry is
+    /// made beside the environment first, so the old one stays until its replacement is
+    /// whole.
+    fn expose(self, env_root: &Path, name: &str, target: &Path) -> io::Result<()> {
+        let link = env_root.join(name);
+        let new = beside(env_root, ".new");
+        remove_entry(&new)?;
+        match self {
+            #[cfg(unix)]
+            Self::Symlink => {
+                std::os::unix::fs::symlink(target, &new)?;
+                // A link moved onto a link replaces it in one step. Anything else that
+                // has ended up there has to go first.
+                if fs::symlink_metadata(&link).is_ok_and(|found| found.is_dir()) {
+                    remove_entry(&link)?;
+                }
+                fs::rename(&new, &link)
+            }
+            Self::Mirror => {
+                mirror_tree(target, &new)?;
+                let stamp = Self::stamp(env_root, name);
+                // No stamp while the entry is in between: a build cut short here leaves
+                // an entry the next one replaces.
+                remove_entry(&stamp)?;
+                remove_entry(&link)?;
+                fs::rename(&new, &link)?;
+                if let Some(stamps) = stamp.parent() {
+                    fs::create_dir_all(stamps)?;
+                }
+                fs::write(stamp, target.to_string_lossy().as_bytes())
+            }
+        }
+    }
+
+    /// Remove every entry whose name is not in `wanted`.
+    fn remove_all_but(self, env_root: &Path, wanted: &[String]) -> io::Result<()> {
+        let unwanted = |dir: &Path| -> io::Result<Vec<PathBuf>> {
+            let mut found = Vec::new();
+            for entry in fs::read_dir(dir)? {
+                let entry = entry?;
+                if !wanted
+                    .iter()
+                    .any(|name| *name.as_str() == entry.file_name())
+                {
+                    found.push(entry.path());
+                }
+            }
+            Ok(found)
+        };
+        for path in unwanted(env_root)? {
+            remove_entry(&path)?;
+        }
+        let stamps = beside(env_root, ".stamps");
+        if matches!(self, Self::Mirror) && stamps.is_dir() {
+            for path in unwanted(&stamps)? {
+                remove_entry(&path)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Recreate the directory tree `target` at `link`, each file a hard link to the original,
 /// or a copy where a hard link cannot be made (another volume, or a file system without
 /// them). The store holds no symlinks, so only directories and files are mirrored.
-#[cfg_attr(not(windows), allow(dead_code))]
 fn mirror_tree(target: &Path, link: &Path) -> io::Result<()> {
     fs::create_dir_all(link)?;
     for entry in fs::read_dir(target)? {
@@ -280,6 +428,156 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+    }
+
+    /// A lockfile of one package, `lib`, with content hash `hash`.
+    fn lock_of(hash: &str) -> Lockfile {
+        let mut lock = Lockfile::new();
+        lock.packages.push(locked("lib", hash));
+        lock
+    }
+
+    #[test]
+    fn a_mirrored_entry_that_is_already_right_is_left_alone() {
+        let (_root, store) = store_with(&[(H_A, "// a")]);
+        let env_dir = TempDir::new().unwrap();
+        let env_root = env_dir.path().join("env");
+        build_as(Exposure::Mirror, &lock_of(H_A), &store, &env_root).unwrap();
+        // Something a rebuild of the entry would not put back.
+        fs::write(env_root.join("lib").join("left.txt"), "").unwrap();
+
+        build_as(Exposure::Mirror, &lock_of(H_A), &store, &env_root).unwrap();
+
+        assert!(env_root.join("lib").join("left.txt").exists());
+    }
+
+    #[test]
+    fn a_mirrored_entry_is_replaced_when_its_package_changes() {
+        let (_root, store) = store_with(&[(H_A, "// a"), (H_B, "// b")]);
+        let env_dir = TempDir::new().unwrap();
+        let env_root = env_dir.path().join("env");
+        build_as(Exposure::Mirror, &lock_of(H_A), &store, &env_root).unwrap();
+        fs::write(env_root.join("lib").join("left.txt"), "").unwrap();
+
+        build_as(Exposure::Mirror, &lock_of(H_B), &store, &env_root).unwrap();
+
+        let entry = env_root.join("lib");
+        assert_eq!(fs::read_to_string(entry.join("std.scad")).unwrap(), "// b");
+        assert!(!entry.join("left.txt").exists());
+        // And it is known to be right from then on.
+        fs::write(entry.join("left.txt"), "").unwrap();
+        build_as(Exposure::Mirror, &lock_of(H_B), &store, &env_root).unwrap();
+        assert!(entry.join("left.txt").exists());
+    }
+
+    #[test]
+    fn a_mirrored_entry_with_no_record_of_its_source_is_made_again() {
+        // As after a build cut short between replacing the entry and recording it.
+        let (_root, store) = store_with(&[(H_A, "// a")]);
+        let env_dir = TempDir::new().unwrap();
+        let env_root = env_dir.path().join("env");
+        build_as(Exposure::Mirror, &lock_of(H_A), &store, &env_root).unwrap();
+        fs::write(env_root.join("lib").join("left.txt"), "").unwrap();
+        fs::remove_file(env_dir.path().join("env.stamps").join("lib")).unwrap();
+
+        build_as(Exposure::Mirror, &lock_of(H_A), &store, &env_root).unwrap();
+
+        assert!(!env_root.join("lib").join("left.txt").exists());
+    }
+
+    #[test]
+    fn a_build_waits_for_another_build_of_the_same_environment() {
+        let (_root, store) = store_with(&[(H_A, "// a")]);
+        let env_dir = TempDir::new().unwrap();
+        let env_root = env_dir.path().join("env");
+
+        // Stand in for a build in progress, and start a second one.
+        let first = hold(&env_root).unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        let second = {
+            let env_root = env_root.clone();
+            std::thread::spawn(move || {
+                let built = build(&lock_of(H_A), &store, &env_root);
+                done.send(()).unwrap();
+                built
+            })
+        };
+
+        let wait = std::time::Duration::from_millis(300);
+        assert!(
+            finished.recv_timeout(wait).is_err(),
+            "the second build went ahead while the first was running"
+        );
+        assert!(!env_root.exists());
+        drop(first);
+        second.join().unwrap().unwrap();
+        assert!(env_root.join("lib").exists());
+    }
+
+    #[test]
+    fn a_mirrored_environment_that_was_deleted_is_built_again() {
+        // Deleting `.scadman/env` by hand leaves the records beside it.
+        let (_root, store) = store_with(&[(H_A, "// a")]);
+        let env_dir = TempDir::new().unwrap();
+        let env_root = env_dir.path().join("env");
+        build_as(Exposure::Mirror, &lock_of(H_A), &store, &env_root).unwrap();
+        fs::remove_dir_all(&env_root).unwrap();
+
+        build_as(Exposure::Mirror, &lock_of(H_A), &store, &env_root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(env_root.join("lib").join("std.scad")).unwrap(),
+            "// a"
+        );
+    }
+
+    #[test]
+    fn a_mirrored_entry_the_lockfile_drops_is_removed_with_its_record() {
+        let (_root, store) = store_with(&[(H_A, "// a")]);
+        let env_dir = TempDir::new().unwrap();
+        let env_root = env_dir.path().join("env");
+        build_as(Exposure::Mirror, &lock_of(H_A), &store, &env_root).unwrap();
+
+        build_as(Exposure::Mirror, &Lockfile::new(), &store, &env_root).unwrap();
+
+        assert!(!env_root.join("lib").exists());
+        assert!(!env_dir.path().join("env.stamps").join("lib").exists());
+    }
+
+    #[test]
+    fn a_build_that_fails_leaves_the_environment_it_had() {
+        let (_root, store) = store_with(&[(H_A, "// a")]);
+        let env_dir = TempDir::new().unwrap();
+        let env_root = env_dir.path().join("env");
+        build(&lock_of(H_A), &store, &env_root).unwrap();
+
+        // A second package that is not in the store: nothing may change for the first.
+        let mut lock = lock_of(H_A);
+        lock.packages.push(locked("Ghost", H_C));
+        assert!(build(&lock, &store, &env_root).is_err());
+
+        assert_eq!(
+            fs::read_to_string(env_root.join("lib").join("std.scad")).unwrap(),
+            "// a"
+        );
+    }
+
+    #[test]
+    fn something_else_standing_where_an_entry_goes_is_replaced() {
+        // A directory where a link belongs, as an environment built another way leaves.
+        let (_root, store) = store_with(&[(H_A, "// a")]);
+        let env_dir = TempDir::new().unwrap();
+        let env_root = env_dir.path().join("env");
+        fs::create_dir_all(env_root.join("lib")).unwrap();
+        fs::write(env_root.join("lib").join("old.scad"), "// old").unwrap();
+
+        build(&lock_of(H_A), &store, &env_root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(env_root.join("lib").join("std.scad")).unwrap(),
+            "// a"
+        );
+        assert!(!env_root.join("lib").join("old.scad").exists());
     }
 
     #[test]

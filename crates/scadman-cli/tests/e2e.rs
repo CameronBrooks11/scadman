@@ -1527,6 +1527,101 @@ fn an_abbreviated_rev_is_refused_with_a_clear_message() {
 }
 
 #[test]
+fn commands_running_at_once_in_one_project_all_succeed() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _, _) = synced_project(root.path(), &store);
+
+    // What `make -j` over several parts does: every job syncs the same project. Each
+    // round starts with no environment, so every job has the whole of it to build.
+    for round in 0..6 {
+        fs::remove_dir_all(proj.join(".scadman").join("env")).unwrap();
+        let running: Vec<_> = (0..8)
+            .map(|job| {
+                let command = if job % 2 == 0 { "sync" } else { "env" };
+                Command::new(env!("CARGO_BIN_EXE_scadman"))
+                    .current_dir(&proj)
+                    .env("XDG_DATA_HOME", store.path())
+                    .arg(command)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("run scadman")
+            })
+            .collect();
+        for child in running {
+            let out = child.wait_with_output().unwrap();
+            assert!(
+                out.status.success(),
+                "round {round}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+    let via_env = proj.join(".scadman/env/mylib/greet.scad");
+    assert_eq!(fs::read_to_string(via_env).unwrap(), GREET);
+}
+
+#[test]
+fn a_sync_that_fails_leaves_the_environment_it_had() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _, _) = synced_project(root.path(), &store);
+    let via_env = proj.join(".scadman/env/mylib/greet.scad");
+    assert_eq!(fs::read_to_string(&via_env).unwrap(), GREET);
+
+    // Ask for a library root the package does not have, in the manifest and the lockfile
+    // alike, so the lockfile is current and the failure comes from building the environment.
+    let manifest = fs::read_to_string(proj.join("scadman.toml")).unwrap();
+    fs::write(
+        proj.join("scadman.toml"),
+        manifest.replace(" }\n", ", root = \"nope\" }\n"),
+    )
+    .unwrap();
+    let mut lock = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    lock.push_str("root = \"nope\"\n");
+    fs::write(proj.join("scadman.lock"), lock).unwrap();
+
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    assert!(!sync.status.success());
+    assert!(
+        String::from_utf8_lossy(&sync.stderr).contains("`nope` does not exist"),
+        "{}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&via_env).unwrap(),
+        GREET,
+        "the environment that worked is gone"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_environment_that_is_already_right_is_left_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _, _) = synced_project(root.path(), &store);
+    let env = proj.join(".scadman/env");
+
+    // With the directory closed to changes, replacing any entry in it would fail.
+    fs::set_permissions(&env, fs::Permissions::from_mode(0o555)).unwrap();
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    fs::set_permissions(&env, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(
+        sync.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(env.join("mylib/greet.scad")).unwrap(),
+        GREET
+    );
+}
+
+#[test]
 fn sync_rejects_a_stale_lockfile() {
     let root = TempDir::new().unwrap();
     let store = StoreHome::new();

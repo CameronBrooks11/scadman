@@ -6,7 +6,7 @@ can be agreed before the work is done.
 
 ## Setup
 
-You need a Rust toolchain (1.88 or newer, via [rustup](https://rustup.rs)),
+You need a Rust toolchain (1.89 or newer, via [rustup](https://rustup.rs)),
 [`just`](https://github.com/casey/just), [`pre-commit`](https://pre-commit.com) and
 `git`. `openscad` is needed only for the real-library tests below, and
 [`mdbook`](https://rust-lang.github.io/mdBook/) only to preview the documentation site.
