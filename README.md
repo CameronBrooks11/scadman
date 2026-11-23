@@ -127,6 +127,13 @@ Bug reports and feedback are welcome on the
 [issue tracker](https://github.com/CameronBrooks11/scadman/issues). To build, test and
 send a change, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Not the `scadman` crate
+
+The `scadman` crate on crates.io is an unrelated project: a Rust library that
+generates OpenSCAD code ([lum1narie/scadman](https://github.com/lum1narie/scadman)).
+`cargo install scadman` installs that one. This project is not published on crates.io;
+install it as described under [Install](#install).
+
 ## License
 
 Apache-2.0.

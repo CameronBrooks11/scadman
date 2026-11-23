@@ -54,6 +54,11 @@ cost is a slower v1 and steeper onboarding for casual contributors.
 An earlier draft used `scadpkg` for the CLI; two names would have to be explained
 forever, so they were collapsed.
 
+The `scadman` name on crates.io belongs to an unrelated project that predates this one.
+Decided 2026-11-23: keep the name. scadman is not published to crates.io under it, and a
+crate, if one is ever published, takes another name such as `scadman-cli`. The README
+says which project `cargo install scadman` installs.
+
 ## D4. License — Apache-2.0
 
 **Decision:** Apache-2.0 (relicensed from an initial MPL-2.0).
