@@ -237,6 +237,80 @@ impl Manifest {
     }
 }
 
+/// Rewrite `text`, the project's own manifest, so that its dependencies are `wanted`'s,
+/// touching only the entries that differ. Comments, key order and the layout of
+/// everything else stay as the user wrote them.
+///
+/// A new entry is written the way the file already writes its dependencies: a section
+/// per dependency when every existing one is a section, otherwise one line in
+/// `[dependencies]`, the form the documentation shows.
+///
+/// The result is read back before it is returned, so a manifest that does not say what
+/// was asked for is never written.
+pub fn edit_dependencies(text: &str, wanted: &Manifest) -> Result<String, String> {
+    let current = Manifest::from_root_toml(text).map_err(|e| e.to_string())?;
+    let mut document: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{e}"))?;
+
+    let changed: Vec<(&String, &Dependency)> = wanted
+        .dependencies
+        .iter()
+        .filter(|(name, dependency)| current.dependencies.get(*name) != Some(dependency))
+        .collect();
+    let removed: Vec<&String> = current
+        .dependencies
+        .keys()
+        .filter(|name| !wanted.dependencies.contains_key(*name))
+        .collect();
+
+    if !changed.is_empty() && document.get("dependencies").is_none() {
+        document.insert("dependencies", toml_edit::table());
+    }
+    if let Some(item) = document.get_mut("dependencies") {
+        let table = item
+            .as_table_like_mut()
+            .ok_or("`dependencies` is not a table")?;
+        for name in removed {
+            table.remove(name);
+        }
+        let mut sections = !table.is_empty() && table.iter().all(|(_, entry)| entry.is_table());
+        for (name, dependency) in changed {
+            // An entry being replaced keeps the form it had.
+            let as_section = match table.get(name) {
+                Some(existing) => existing.is_table(),
+                None => sections,
+            };
+            let fields = toml::to_string(dependency).map_err(|e| e.to_string())?;
+            let fields: toml_edit::DocumentMut = fields.parse().map_err(|e| format!("{e}"))?;
+            let fields = fields.as_table().clone();
+            let mut entry = if as_section {
+                toml_edit::Item::Table(fields)
+            } else {
+                toml_edit::value(fields.into_inline_table())
+            };
+            match table.get_mut(name) {
+                // Replaced where it stands, under whatever comment the user put above it.
+                Some(existing) => {
+                    if let (Some(old), Some(new)) = (existing.as_table(), entry.as_table_mut()) {
+                        *new.decor_mut() = old.decor().clone();
+                    }
+                    *existing = entry;
+                }
+                None => {
+                    table.insert(name, entry);
+                }
+            }
+            sections = sections && as_section;
+        }
+    }
+
+    let edited = document.to_string();
+    match Manifest::from_root_toml(&edited) {
+        Ok(read_back) if read_back == *wanted => Ok(edited),
+        Ok(_) => Err("the edited manifest does not match what was asked for".to_string()),
+        Err(error) => Err(format!("the edited manifest does not parse: {error}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -958,6 +958,160 @@ fn project_with(root: &Path, toml: &str) -> PathBuf {
     proj
 }
 
+const A_REV: &str = "0123456789abcdef0123456789abcdef01234567";
+
+/// `add` then `remove` of one dependency in a project whose manifest is `original`;
+/// returns the manifest after each.
+fn add_then_remove(original: &str) -> (String, String) {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let proj = project_with(root.path(), original);
+    let manifest = || fs::read_to_string(proj.join("scadman.toml")).unwrap();
+
+    let add = scadman(
+        &proj,
+        store.path(),
+        &[
+            "add",
+            "other",
+            "https://example.invalid/other",
+            "--rev",
+            A_REV,
+        ],
+    );
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let added = manifest();
+    let remove = scadman(&proj, store.path(), &["remove", "other"]);
+    assert!(
+        remove.status.success(),
+        "remove failed: {}",
+        String::from_utf8_lossy(&remove.stderr)
+    );
+    (added, manifest())
+}
+
+#[test]
+fn add_and_remove_leave_the_rest_of_the_manifest_as_written() {
+    let original = format!(
+        "# Pinned for the 2024 print run.\n[project]\nname = \"demo\" # the enclosure\n\n\
+         [dependencies]\n# Stay here until the hinge is redesigned.\n\
+         mylib = {{ git = \"https://example.invalid/mylib\", rev = \"{A_REV}\" }}\n"
+    );
+
+    let (added, removed) = add_then_remove(&original);
+
+    assert_eq!(
+        added,
+        format!(
+            "{original}other = {{ git = \"https://example.invalid/other\", rev = \"{A_REV}\" }}\n"
+        )
+    );
+    assert_eq!(removed, original);
+}
+
+#[test]
+fn add_follows_a_manifest_written_as_one_section_per_dependency() {
+    let original = format!(
+        "[project]\nname = \"demo\"\n\n# Stay here until the hinge is redesigned.\n\
+         [dependencies.mylib]\ngit = \"https://example.invalid/mylib\"\nrev = \"{A_REV}\"\n"
+    );
+
+    let (added, removed) = add_then_remove(&original);
+
+    assert_eq!(
+        added,
+        format!(
+            "{original}\n[dependencies.other]\ngit = \"https://example.invalid/other\"\nrev = \"{A_REV}\"\n"
+        )
+    );
+    assert_eq!(removed, original);
+}
+
+#[test]
+fn add_to_a_new_project_writes_the_form_the_docs_show() {
+    let (added, removed) = add_then_remove("[project]\nname = \"demo\"\n");
+
+    assert_eq!(
+        added,
+        format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\n\
+             other = {{ git = \"https://example.invalid/other\", rev = \"{A_REV}\" }}\n"
+        )
+    );
+    // The table `add` made stays; it is the user's file now.
+    assert_eq!(removed, "[project]\nname = \"demo\"\n\n[dependencies]\n");
+}
+
+#[test]
+fn adding_a_name_again_replaces_that_section_where_it_stands() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n# first\n[dependencies.a]\n\
+             git = \"https://example.invalid/a\"\nrev = \"{A_REV}\"\n\n# second\n\
+             [dependencies.b]\ngit = \"https://example.invalid/b\"\nrev = \"{A_REV}\"\n"
+        ),
+    );
+
+    let add = scadman(
+        &proj,
+        store.path(),
+        &["add", "a", "https://example.invalid/a", "--tag", "v2"],
+    );
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(proj.join("scadman.toml")).unwrap(),
+        format!(
+            "[project]\nname = \"demo\"\n\n# first\n[dependencies.a]\n\
+             git = \"https://example.invalid/a\"\ntag = \"v2\"\n\n# second\n\
+             [dependencies.b]\ngit = \"https://example.invalid/b\"\nrev = \"{A_REV}\"\n"
+        )
+    );
+}
+
+#[test]
+fn adding_a_name_again_replaces_that_entry_where_it_stands() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\n# first\n\
+             a = {{ git = \"https://example.invalid/a\", rev = \"{A_REV}\" }}\n# second\n\
+             b = {{ git = \"https://example.invalid/b\", rev = \"{A_REV}\" }}\n"
+        ),
+    );
+
+    let add = scadman(
+        &proj,
+        store.path(),
+        &["add", "a", "https://example.invalid/a", "--tag", "v2"],
+    );
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(proj.join("scadman.toml")).unwrap(),
+        format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\n# first\n\
+             a = {{ git = \"https://example.invalid/a\", tag = \"v2\" }}\n# second\n\
+             b = {{ git = \"https://example.invalid/b\", rev = \"{A_REV}\" }}\n"
+        )
+    );
+}
+
 #[test]
 fn lock_then_sync_end_to_end() {
     let root = TempDir::new().unwrap();
@@ -996,6 +1150,116 @@ fn lock_then_sync_end_to_end() {
         .join("mylib")
         .join("greet.scad");
     assert_eq!(fs::read_to_string(via_env).unwrap(), GREET);
+}
+
+/// A repository of the caller's own, with one commit, standing in for the one git names
+/// in `GIT_DIR` when it runs a command for the user.
+fn callers_repo(root: &Path) -> PathBuf {
+    let own = root.join("own");
+    fs::create_dir_all(&own).unwrap();
+    fs::write(own.join("mine.txt"), "mine\n").unwrap();
+    git(&own, &["init", "--quiet"]);
+    git(&own, &["add", "-A"]);
+    commit(&own, "my work");
+    own
+}
+
+/// What a git command aimed at the wrong repository would change in it: the commit and
+/// branch checked out, the remotes, and the index against the working tree.
+fn repo_state(repo: &Path) -> String {
+    let read = |args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    format!(
+        "head={} branch={} remotes=[{}] status=[{}]",
+        read(&["rev-parse", "HEAD"]),
+        read(&["rev-parse", "--abbrev-ref", "HEAD"]),
+        read(&["remote"]),
+        read(&["status", "--porcelain"]),
+    )
+}
+
+/// Run scadman as git runs a command on the user's behalf from inside `own`: with the
+/// variables that tell git which repository to work in.
+fn scadman_called_from_git(project: &Path, store_home: &Path, own: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_scadman"))
+        .current_dir(project)
+        .env("XDG_DATA_HOME", store_home)
+        .env("GIT_DIR", own.join(".git"))
+        .env("GIT_WORK_TREE", own)
+        .env("GIT_INDEX_FILE", own.join(".git").join("index"))
+        .args(args)
+        .output()
+        .expect("run scadman")
+}
+
+#[test]
+fn a_fetch_does_not_touch_the_repository_git_names_in_its_environment() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, rev) = make_lib(root.path());
+    let own = callers_repo(root.path());
+    let before = repo_state(&own);
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", rev = \"{rev}\" }}\n",
+            file_url(&lib)
+        ),
+    );
+
+    let lock = scadman_called_from_git(&proj, store.path(), &own, &["lock"]);
+    assert!(
+        lock.status.success(),
+        "lock failed: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    assert_eq!(
+        repo_state(&own),
+        before,
+        "the caller's repository was changed"
+    );
+    assert!(!own.join("greet.scad").exists());
+    let lockfile = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    assert!(lockfile.contains(&rev));
+}
+
+#[test]
+fn add_reads_the_default_branch_without_the_callers_repository_config() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, _) = make_lib(root.path());
+    let url = file_url(&lib);
+    // The caller's repository sends this URL somewhere that does not exist. That is its
+    // own business, and must not reach a lookup scadman makes.
+    let own = callers_repo(root.path());
+    git(
+        &own,
+        &[
+            "config",
+            "url.file:///nonexistent-scadman-redirect/.insteadOf",
+            &url,
+        ],
+    );
+    let proj = project_with(root.path(), "[project]\nname = \"demo\"\n");
+
+    let add = scadman_called_from_git(&proj, store.path(), &own, &["add", "mylib", &url]);
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let manifest = fs::read_to_string(proj.join("scadman.toml")).unwrap();
+    assert!(
+        manifest.contains(&format!("branch = \"{}\"", current_branch(&lib))),
+        "{manifest}"
+    );
 }
 
 /// Lock `lib` at `rev` in a fresh project and store, with `GIT_CONFIG_GLOBAL` set to
