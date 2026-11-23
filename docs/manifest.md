@@ -18,6 +18,11 @@ dotSCAD = { git = "https://github.com/JustinSDK/dotSCAD", rev = "bb33edfd75cba0e
 mylib = { path = "../mylib" }
 ```
 
+`scadman add` and `scadman remove` change only the entry they are asked about. Your
+comments, the order of your keys and the layout of the rest of the file stay as you
+wrote them. A new entry is written as one line in `[dependencies]`, as above, unless the
+file already gives every dependency its own `[dependencies.NAME]` section.
+
 ### `[project]`
 
 | Key | Required | Meaning |
