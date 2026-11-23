@@ -6,6 +6,14 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.1.0-alpha.10] — 2026-11-23
+
+Tenth alpha. Fixes for what a new user meets in the first hour: `lock` no longer moves
+pins on its own, a changed tag or branch is noticed, comments in `scadman.toml` survive
+`add` and `remove`, and commands run side by side in one project no longer fail. The
+first `scadman lock` with this release resolves each project's branch and tag
+dependencies again, once, and prints what moved.
+
 ### Fixed
 
 - **`scadman run` exits with OpenSCAD's exit code** (#151). It exited 1 for any failure
@@ -376,6 +384,7 @@ First public alpha. A working, project-oriented OpenSCAD dependency manager, gro
 GitHub-hosted git sources only; one version per identity; per-OS lockfile hashes; no hosted
 registry or native OpenSCAD-GUI integration yet. See the README's *Status & scope*.
 
+[0.1.0-alpha.10]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.10
 [0.1.0-alpha.9]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.9
 [0.1.0-alpha.8]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.8
 [0.1.0-alpha.7]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.7
