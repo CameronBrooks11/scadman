@@ -110,7 +110,7 @@ lives.
 | `scadman add <name> --path <dir>` | Declare a local directory as a dependency. |
 | `scadman remove <name>` | Drop a dependency from `scadman.toml`. |
 | `scadman list` | Show declared dependencies and the commit each is locked to. |
-| `scadman lock` | Resolve every dependency and write `scadman.lock`. |
+| `scadman lock` | Bring `scadman.lock` into line with the manifest: resolve what was added or changed, drop what was removed, and keep every other commit where it is locked. |
 | `scadman update [name…]` | Move branch and tag dependencies to their newest commit, all or just the named ones, and report what moved. |
 | `scadman sync [--verify]` | Build the project environment from the lockfile and warn about undeclared imports and unfetched submodules. `--verify` re-hashes every stored library first and restores any that was modified. |
 | `scadman run -- <openscad args>` | Sync, then run OpenSCAD with the environment on `OPENSCADPATH`. |

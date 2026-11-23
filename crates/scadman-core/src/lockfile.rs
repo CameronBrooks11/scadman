@@ -66,6 +66,12 @@ pub struct LockedPackage {
     /// same commit hashes differently with and without them.
     #[serde(default, skip_serializing_if = "is_false")]
     pub submodules: bool,
+    /// What the commit was resolved from, for every manifest that names the package:
+    /// `branch:NAME`, `tag:NAME` or `rev:COMMIT`, sorted. It is how a later command
+    /// knows whether a manifest still asks for the same thing. Empty in a lockfile
+    /// written before this was recorded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requested: Vec<String>,
 }
 
 fn root_default() -> String {
@@ -133,6 +139,7 @@ mod tests {
             root: ".".to_string(),
             on_path: false,
             submodules: false,
+            requested: Vec::new(),
         }
     }
 
@@ -146,6 +153,23 @@ mod tests {
         // No readable version: not a lockfile we can say anything about.
         assert_eq!(declared_version("not toml = = ="), None);
         assert_eq!(declared_version("package = []\n"), None);
+    }
+
+    #[test]
+    fn what_a_pin_was_resolved_from_is_written_only_when_recorded() {
+        let recorded = LockedPackage {
+            requested: vec!["branch:main".to_string()],
+            ..sample_package()
+        };
+        let mut lock = Lockfile::new();
+        lock.packages = vec![sample_package(), recorded];
+        let text = lock.to_toml().unwrap();
+        // One line for the package that has it; the other reads as earlier releases wrote it.
+        assert_eq!(text.matches("requested").count(), 1, "{text}");
+        assert!(text.contains("requested = [\"branch:main\"]"), "{text}");
+        assert_eq!(Lockfile::from_toml(&text).unwrap(), lock);
+        // And it does not move the format version: an earlier release reads this file.
+        assert_eq!(version_for(&lock.packages), BASE_VERSION);
     }
 
     #[test]

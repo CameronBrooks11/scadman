@@ -942,7 +942,46 @@ fn lock_cmd() -> Result<()> {
         })?;
     }
     let store = open_store()?;
-    let lock = resolve_lock(&manifest, &store)?;
+    // A lockfile that does not parse is broken, and is written afresh.
+    let previous = fs::read_to_string(lockfile::LOCKFILE_FILE)
+        .ok()
+        .and_then(|text| parse_lockfile(&text).ok());
+    let lock = match &previous {
+        None => resolve_lock(&manifest, &store)?,
+        Some(previous) => {
+            // Commits already locked stay: `update` is what moves one. The exception is
+            // a pin from a lockfile that did not record what it was resolved from. The
+            // manifest may ask for something else by now and nothing would show it, so
+            // those are resolved again, once.
+            let unrecorded = previous
+                .packages
+                .iter()
+                .filter(|p| !p.source.starts_with(lockfile::PATH_SOURCE_PREFIX))
+                .filter(|p| p.requested.is_empty())
+                .map(|p| p.source.clone())
+                .collect();
+            let base = std::env::current_dir().context("determine project directory")?;
+            let fetcher = CachedGitFetcher::new(&store, previous, unrecorded, false);
+            let lock = resolve(&manifest, &base, &fetcher)
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .to_lockfile();
+            warn_restored_by(&fetcher.inner, &lock);
+            for package in &lock.packages {
+                if !package.source.starts_with(lockfile::PATH_SOURCE_PREFIX)
+                    && let Some(before) = previous.packages.iter().find(|p| p.name == package.name)
+                    && before.rev != package.rev
+                {
+                    println!(
+                        "Updated {}: {} → {}",
+                        package.name,
+                        short(&before.rev),
+                        short(&package.rev)
+                    );
+                }
+            }
+            lock
+        }
+    };
     write_lock(&lock)?;
     warn_unfetched_submodules(&lock, &store);
     let n = lock.packages.len();
@@ -963,8 +1002,8 @@ fn update_cmd(names: Vec<String>) -> Result<()> {
     let previous = read_lockfile_opt()?;
 
     let updated = if names.is_empty() {
-        // Advance everything — a full fresh re-resolve, identical to `scadman lock` (which
-        // already moves branch/tag deps, transitive ones included), plus a delta report.
+        // Advance everything: a full fresh resolve, transitive dependencies included,
+        // plus a report of what moved.
         resolve_lock(&manifest, &store)?
     } else {
         // Advance only the named deps; hold the rest at their locked revisions. Named deps
@@ -1256,7 +1295,7 @@ impl Fetcher for CachedGitFetcher {
     fn fetch(&self, url: &str, reference: &GitRef, submodules: bool) -> io::Result<Fetched> {
         if !self.refresh.contains(url)
             && let Some(package) = self.locked.get(url)
-            && holds_reference(reference, &package.rev)
+            && holds_reference(reference, package)
         {
             let path = self.store.path_for(&package.hash);
             // A copy locked without its submodules does not answer a request for them,
@@ -1309,10 +1348,16 @@ impl Fetcher for CachedGitFetcher {
 ///
 /// The kind comes from the manifest key, never from the spelling: a tag named `20210101`
 /// looks like a commit hash and is not one.
-fn holds_reference(reference: &GitRef, rev: &str) -> bool {
+///
+/// A tag or branch is held while it is the one the commit was resolved from. A lockfile
+/// written before that was recorded cannot say, and its pins are held as they always
+/// were.
+fn holds_reference(reference: &GitRef, package: &lockfile::LockedPackage) -> bool {
     match reference {
-        GitRef::Rev(requested) => rev.eq_ignore_ascii_case(requested),
-        GitRef::Tag(_) | GitRef::Branch(_) => true,
+        GitRef::Rev(requested) => package.rev.eq_ignore_ascii_case(requested),
+        GitRef::Tag(_) | GitRef::Branch(_) => {
+            package.requested.is_empty() || package.requested.contains(&reference.requested())
+        }
     }
 }
 
@@ -1635,35 +1680,80 @@ mod tests {
         assert_eq!(plural(2, "package", "packages"), "packages");
     }
 
+    /// A package locked at `rev`, resolved from each of `requested`.
+    fn locked_at(rev: &str, requested: &[&str]) -> lockfile::LockedPackage {
+        lockfile::LockedPackage {
+            name: "lib".to_string(),
+            source: "https://h/lib".to_string(),
+            rev: rev.to_string(),
+            hash: String::new(),
+            dependencies: Vec::new(),
+            root: ".".to_string(),
+            on_path: false,
+            submodules: false,
+            requested: requested.iter().map(|r| r.to_string()).collect(),
+        }
+    }
+
+    const LOCKED_REV: &str = "061fef7abc0000000000000000000000000000ab";
+
     #[test]
-    fn holds_reference_holds_branches_but_honors_changed_pins() {
-        let rev = "061fef7abc0000000000000000000000000000ab";
+    fn holds_reference_holds_the_same_pin_and_honors_a_changed_one() {
+        let package = locked_at(
+            LOCKED_REV,
+            &["rev:061fef7abc0000000000000000000000000000ab"],
+        );
         let r = |s: &str| GitRef::Rev(s.to_string());
-        // Branch/tag names are held at the locked commit.
-        assert!(holds_reference(&GitRef::Branch("main".into()), rev));
-        assert!(holds_reference(&GitRef::Tag("v2.0.700".into()), rev));
         // The same exact pin is held — no needless re-fetch.
-        assert!(holds_reference(&r(rev), rev));
-        assert!(holds_reference(&r(&rev.to_uppercase()), rev));
+        assert!(holds_reference(&r(LOCKED_REV), &package));
+        assert!(holds_reference(&r(&LOCKED_REV.to_uppercase()), &package));
         // A prefix of the locked commit is not the same pin (and cannot be fetched).
-        assert!(!holds_reference(&r("061fef7"), rev));
+        assert!(!holds_reference(&r("061fef7"), &package));
         // A different exact commit must NOT be held — it has to be re-fetched.
         assert!(!holds_reference(
             &r("deadbeef1234567890000000000000000000cafe"),
-            rev
+            &package
         ));
-        assert!(!holds_reference(&r("deadbee"), rev));
+        assert!(!holds_reference(&r("deadbee"), &package));
+    }
+
+    #[test]
+    fn holds_reference_holds_the_tag_or_branch_the_commit_came_from() {
+        let package = locked_at(LOCKED_REV, &["branch:main", "tag:v1"]);
+        assert!(holds_reference(&GitRef::Branch("main".into()), &package));
+        assert!(holds_reference(&GitRef::Tag("v1".into()), &package));
+        // Another name is a different request, and so is the same name as the other kind.
+        assert!(!holds_reference(&GitRef::Branch("dev".into()), &package));
+        assert!(!holds_reference(&GitRef::Tag("v2".into()), &package));
+        assert!(!holds_reference(&GitRef::Tag("main".into()), &package));
+        assert!(!holds_reference(&GitRef::Branch("v1".into()), &package));
+    }
+
+    #[test]
+    fn holds_reference_holds_every_tag_and_branch_of_a_lockfile_that_recorded_none() {
+        // Written by an earlier release: there is nothing to compare against.
+        let package = locked_at(LOCKED_REV, &[]);
+        assert!(holds_reference(&GitRef::Branch("main".into()), &package));
+        assert!(holds_reference(&GitRef::Tag("v2.0.700".into()), &package));
+        // An exact commit is still compared.
+        assert!(!holds_reference(
+            &GitRef::Rev("deadbeef1234567890000000000000000000cafe".into()),
+            &package
+        ));
     }
 
     #[test]
     fn holds_reference_goes_by_kind_not_spelling() {
         // A tag or branch spelled like a commit hash is still a tag or branch: held.
-        let rev = "061fef7abc0000000000000000000000000000ab";
-        assert!(holds_reference(&GitRef::Tag("20210101".into()), rev));
-        assert!(holds_reference(&GitRef::Branch("deadbeef".into()), rev));
-        assert!(holds_reference(&GitRef::Tag("cafe2024".into()), rev));
+        let package = locked_at(LOCKED_REV, &[]);
+        assert!(holds_reference(&GitRef::Tag("20210101".into()), &package));
+        assert!(holds_reference(
+            &GitRef::Branch("deadbeef".into()),
+            &package
+        ));
+        assert!(holds_reference(&GitRef::Tag("cafe2024".into()), &package));
         // The same spellings as a `rev` are exact pins, and a different one is not held.
-        assert!(!holds_reference(&GitRef::Rev("20210101".into()), rev));
+        assert!(!holds_reference(&GitRef::Rev("20210101".into()), &package));
     }
 
     #[test]

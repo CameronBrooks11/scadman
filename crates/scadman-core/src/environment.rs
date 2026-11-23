@@ -311,6 +311,7 @@ mod tests {
             root: ".".to_string(),
             on_path: false,
             submodules: false,
+            requested: Vec::new(),
         }
     }
 
@@ -638,6 +639,7 @@ mod tests {
             root: "src".to_string(),
             on_path: true,
             submodules: false,
+            requested: Vec::new(),
         });
 
         let env_dir = TempDir::new().unwrap();

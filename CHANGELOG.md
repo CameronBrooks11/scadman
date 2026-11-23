@@ -27,9 +27,21 @@ All notable changes to scadman are recorded here. Format loosely follows
   commands running at once in one project failed with `build environment`, and a build
   that failed left the environment empty. An entry that is already right is now left
   alone, a failed build changes nothing, and builds of one project take turns.
+- **A changed `tag` or `branch` in the manifest is noticed** (#153). `sync`, `run` and
+  `env` built the old commit and `doctor` called the lockfile up to date. They now stop
+  and ask for `scadman lock`, which moves to the new reference and says so.
 
 ### Changed
 
+- **`scadman lock` keeps the commits already locked** (#152). It resolved every
+  dependency afresh, so a branch or tag dependency moved to its newest commit whenever
+  the lockfile was rewritten, with no message. `lock` now resolves only what the manifest
+  added or changed, and works without the network when there is nothing to fetch.
+  `scadman update` is the command that moves a pin, as the documentation already said.
+- **The lockfile records what each commit was resolved from**, as `requested` on each
+  package (`branch:NAME`, `tag:NAME` or `rev:COMMIT`). The lockfile version does not
+  change, and earlier releases ignore the field. The first `lock` on a lockfile without
+  it resolves those libraries again and prints each commit that moved.
 - **Building from source needs Rust 1.89**, up from 1.88.
 
 ## [0.1.0-alpha.9] — 2026-11-19
