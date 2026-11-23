@@ -18,6 +18,15 @@ All notable changes to scadman are recorded here. Format loosely follows
   change only the entry asked about. A new entry is written as one line in
   `[dependencies]`, the form the documentation shows, unless the file already gives each
   dependency its own section.
+- **The project environment is brought up to date, not deleted and rebuilt** (#149).
+  `sync`, `run` and `env` removed `.scadman/env/` and built it again every time, so
+  commands running at once in one project failed with `build environment`, and a build
+  that failed left the environment empty. An entry that is already right is now left
+  alone, a failed build changes nothing, and builds of one project take turns.
+
+### Changed
+
+- **Building from source needs Rust 1.89**, up from 1.88.
 
 ## [0.1.0-alpha.9] — 2026-11-19
 
