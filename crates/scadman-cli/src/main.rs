@@ -191,9 +191,7 @@ fn remove_cmd(name: String) -> Result<()> {
             manifest::MANIFEST_FILE
         );
     }
-    let text = manifest.to_toml().context("serialize manifest")?;
-    fs::write(manifest::MANIFEST_FILE, text)
-        .with_context(|| format!("write {}", manifest::MANIFEST_FILE))?;
+    write_dependencies(&manifest)?;
     println!(
         "Removed `{name}` from {}. Run `scadman lock`.",
         manifest::MANIFEST_FILE
@@ -812,9 +810,7 @@ fn add_cmd(
     if let Some(Dependency::Git(git)) = manifest.dependencies.get_mut(&name) {
         git.submodules = submodules;
     }
-    let text = manifest.to_toml().context("serialize manifest")?;
-    fs::write(manifest::MANIFEST_FILE, text)
-        .with_context(|| format!("write {}", manifest::MANIFEST_FILE))?;
+    write_dependencies(&manifest)?;
     let verb = if updated { "Updated" } else { "Added" };
     match &defaulted {
         Some(b) => println!(
@@ -1148,6 +1144,18 @@ fn warn_openscad_too_old() {
             "warning: this project asks for OpenSCAD ≥ {req}, but you have `{have}` — update if a render fails"
         );
     }
+}
+
+/// Write `manifest`'s dependencies into `scadman.toml`, changing only the entries that
+/// differ from what the file holds.
+fn write_dependencies(manifest: &Manifest) -> Result<()> {
+    let text = fs::read_to_string(manifest::MANIFEST_FILE)
+        .with_context(|| format!("read {}", manifest::MANIFEST_FILE))?;
+    let edited = manifest::edit_dependencies(&text, manifest)
+        .map_err(|reason| anyhow::anyhow!(reason))
+        .with_context(|| format!("update {}", manifest::MANIFEST_FILE))?;
+    fs::write(manifest::MANIFEST_FILE, edited)
+        .with_context(|| format!("write {}", manifest::MANIFEST_FILE))
 }
 
 fn load_manifest() -> Result<Manifest> {

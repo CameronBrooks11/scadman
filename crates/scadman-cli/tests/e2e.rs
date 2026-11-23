@@ -958,6 +958,160 @@ fn project_with(root: &Path, toml: &str) -> PathBuf {
     proj
 }
 
+const A_REV: &str = "0123456789abcdef0123456789abcdef01234567";
+
+/// `add` then `remove` of one dependency in a project whose manifest is `original`;
+/// returns the manifest after each.
+fn add_then_remove(original: &str) -> (String, String) {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let proj = project_with(root.path(), original);
+    let manifest = || fs::read_to_string(proj.join("scadman.toml")).unwrap();
+
+    let add = scadman(
+        &proj,
+        store.path(),
+        &[
+            "add",
+            "other",
+            "https://example.invalid/other",
+            "--rev",
+            A_REV,
+        ],
+    );
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let added = manifest();
+    let remove = scadman(&proj, store.path(), &["remove", "other"]);
+    assert!(
+        remove.status.success(),
+        "remove failed: {}",
+        String::from_utf8_lossy(&remove.stderr)
+    );
+    (added, manifest())
+}
+
+#[test]
+fn add_and_remove_leave_the_rest_of_the_manifest_as_written() {
+    let original = format!(
+        "# Pinned for the 2024 print run.\n[project]\nname = \"demo\" # the enclosure\n\n\
+         [dependencies]\n# Stay here until the hinge is redesigned.\n\
+         mylib = {{ git = \"https://example.invalid/mylib\", rev = \"{A_REV}\" }}\n"
+    );
+
+    let (added, removed) = add_then_remove(&original);
+
+    assert_eq!(
+        added,
+        format!(
+            "{original}other = {{ git = \"https://example.invalid/other\", rev = \"{A_REV}\" }}\n"
+        )
+    );
+    assert_eq!(removed, original);
+}
+
+#[test]
+fn add_follows_a_manifest_written_as_one_section_per_dependency() {
+    let original = format!(
+        "[project]\nname = \"demo\"\n\n# Stay here until the hinge is redesigned.\n\
+         [dependencies.mylib]\ngit = \"https://example.invalid/mylib\"\nrev = \"{A_REV}\"\n"
+    );
+
+    let (added, removed) = add_then_remove(&original);
+
+    assert_eq!(
+        added,
+        format!(
+            "{original}\n[dependencies.other]\ngit = \"https://example.invalid/other\"\nrev = \"{A_REV}\"\n"
+        )
+    );
+    assert_eq!(removed, original);
+}
+
+#[test]
+fn add_to_a_new_project_writes_the_form_the_docs_show() {
+    let (added, removed) = add_then_remove("[project]\nname = \"demo\"\n");
+
+    assert_eq!(
+        added,
+        format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\n\
+             other = {{ git = \"https://example.invalid/other\", rev = \"{A_REV}\" }}\n"
+        )
+    );
+    // The table `add` made stays; it is the user's file now.
+    assert_eq!(removed, "[project]\nname = \"demo\"\n\n[dependencies]\n");
+}
+
+#[test]
+fn adding_a_name_again_replaces_that_section_where_it_stands() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n# first\n[dependencies.a]\n\
+             git = \"https://example.invalid/a\"\nrev = \"{A_REV}\"\n\n# second\n\
+             [dependencies.b]\ngit = \"https://example.invalid/b\"\nrev = \"{A_REV}\"\n"
+        ),
+    );
+
+    let add = scadman(
+        &proj,
+        store.path(),
+        &["add", "a", "https://example.invalid/a", "--tag", "v2"],
+    );
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(proj.join("scadman.toml")).unwrap(),
+        format!(
+            "[project]\nname = \"demo\"\n\n# first\n[dependencies.a]\n\
+             git = \"https://example.invalid/a\"\ntag = \"v2\"\n\n# second\n\
+             [dependencies.b]\ngit = \"https://example.invalid/b\"\nrev = \"{A_REV}\"\n"
+        )
+    );
+}
+
+#[test]
+fn adding_a_name_again_replaces_that_entry_where_it_stands() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let proj = project_with(
+        root.path(),
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\n# first\n\
+             a = {{ git = \"https://example.invalid/a\", rev = \"{A_REV}\" }}\n# second\n\
+             b = {{ git = \"https://example.invalid/b\", rev = \"{A_REV}\" }}\n"
+        ),
+    );
+
+    let add = scadman(
+        &proj,
+        store.path(),
+        &["add", "a", "https://example.invalid/a", "--tag", "v2"],
+    );
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(proj.join("scadman.toml")).unwrap(),
+        format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\n# first\n\
+             a = {{ git = \"https://example.invalid/a\", tag = \"v2\" }}\n# second\n\
+             b = {{ git = \"https://example.invalid/b\", rev = \"{A_REV}\" }}\n"
+        )
+    );
+}
+
 #[test]
 fn lock_then_sync_end_to_end() {
     let root = TempDir::new().unwrap();
