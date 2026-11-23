@@ -8,6 +8,10 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ### Fixed
 
+- **`scadman run` exits with OpenSCAD's exit code** (#151). It exited 1 for any failure
+  of OpenSCAD and printed an error of its own. It now passes the code through (128 plus
+  the signal number if a signal ended OpenSCAD) and stays quiet. If scadman fails before
+  OpenSCAD has started, it exits 125.
 - **scadman's git commands no longer act on the repository git names in its
   environment** (#148). With `GIT_DIR` set, as git sets it for some of the commands it
   runs, `lock` and `sync` fetched and checked out a dependency inside that repository:
