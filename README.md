@@ -67,7 +67,7 @@ downloaded file (the binary is not signed), and adds its folder to your user `PA
 open a new terminal to pick it up. scadman also needs
 [Git for Windows](https://git-scm.com/download/win).
 
-On another platform, build from source with a Rust toolchain (≥ 1.88):
+On another platform, build from source with a Rust toolchain (≥ 1.89):
 
 ```sh
 cargo install --locked --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha.9 scadman-cli

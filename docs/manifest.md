@@ -162,7 +162,7 @@ One edit is not detected: a changed `tag` or `branch` name on an unchanged URL. 
 |---|---|---|
 | `scadman.toml` | The manifest. | yes |
 | `scadman.lock` | The lockfile. | yes |
-| `.scadman/env/` | The project environment: one entry per library: a symlink, or on Windows a tree of hard links to the stored files (copies where a hard link can't be made), rebuilt on every `sync`. | no (`init` ignores it) |
+| `.scadman/env/` | The project environment: one entry per library: a symlink, or on Windows a tree of hard links to the stored files (copies where a hard link can't be made). `sync`, `run` and `env` bring it into line with the lockfile: an entry that is already right is left alone, and a build that fails leaves the environment as it was. Beside it, `env.lock` makes commands running at once take turns, and on Windows `env.stamps/` records what each entry was made from. | no (`init` ignores it) |
 | `$XDG_DATA_HOME/scadman/store/`, or else `~/.local/share/scadman/store/` (Linux, macOS) or `%LOCALAPPDATA%\scadman\store\` (Windows) | The store: one read-only directory per content hash, shared by all projects. | not in the project |
 
 A library's stored copy is its working tree without `.git`. Symbolic links and special
