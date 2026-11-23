@@ -127,6 +127,7 @@ name = "BOSL2"
 source = "https://github.com/BelfrySCAD/BOSL2"
 rev = "afe82db884ee4409aa76ecfcfbbf54d446964af1"
 hash = "…"
+requested = ["branch:master"]
 ```
 
 | Field | Meaning |
@@ -138,6 +139,7 @@ hash = "…"
 | `dependencies` | Names of the libraries this one declares, if any. |
 | `root`, `on_path` | Copied from the manifest when set. |
 | `submodules` | `true` when the content includes the library's git submodules. |
+| `requested` | What `rev` was resolved from: `branch:NAME`, `tag:NAME` or `rev:COMMIT`, one for each manifest that asks for the library in a different way. |
 
 `version` is the lockfile format. It is `2` when any library is locked with its
 submodules and `1` otherwise, so a project that does not use submodules keeps a
@@ -156,10 +158,17 @@ rewrite it when a path dependency's content has changed. They stop and ask for
 - the lockfile holds a library the manifest no longer leads to, as after
   `scadman remove`;
 - a library's source, `rev`, `root` or `on_path` no longer matches;
+- a library's `tag`, `branch` or `rev` is not the one its commit was resolved from;
 - the manifest asks for a library's submodules and the lockfile has it without them.
 
-One edit is not detected: a changed `tag` or `branch` name on an unchanged URL. Running
-`scadman lock` after every manifest edit covers it.
+`scadman lock` then resolves what changed and leaves every other commit where it is
+locked; it needs the network only for what it has to fetch. Moving a branch or tag
+dependency to a newer commit is `scadman update`.
+
+A lockfile written by 0.1.0-alpha.9 or earlier has no `requested`, so a changed `tag` or
+`branch` in it goes unnoticed until the next `scadman lock`. That `lock` resolves those
+libraries again, once, and prints each commit that moved. The field does not change
+`version`: earlier releases read a lockfile that has it and ignore it.
 
 ## Where scadman keeps things
 

@@ -55,6 +55,24 @@ impl GitRef {
             GitRef::Rev(s) | GitRef::Tag(s) | GitRef::Branch(s) => s,
         }
     }
+
+    /// The reference as the lockfile records it in a package's `requested`.
+    pub fn requested(&self) -> String {
+        match self {
+            GitRef::Rev(rev) => format!("rev:{}", rev.to_ascii_lowercase()),
+            GitRef::Tag(tag) => format!("tag:{tag}"),
+            GitRef::Branch(branch) => format!("branch:{branch}"),
+        }
+    }
+
+    /// The reference as a message names it.
+    fn described(&self) -> String {
+        match self {
+            GitRef::Rev(rev) => format!("commit `{rev}`"),
+            GitRef::Tag(tag) => format!("tag `{tag}`"),
+            GitRef::Branch(branch) => format!("branch `{branch}`"),
+        }
+    }
 }
 
 /// Acquires dependency content into the store. Abstracted so the resolver is testable
@@ -138,6 +156,9 @@ pub struct Resolved {
     pub on_path: bool,
     /// Whether the content includes the source's git submodules.
     pub submodules: bool,
+    /// What each manifest that names the package asked for (see
+    /// [`LockedPackage::requested`]), sorted.
+    pub requested: Vec<String>,
     /// The chain of names that first introduced this package (for conflict diagnostics).
     pub required_by: Vec<String>,
 }
@@ -163,6 +184,7 @@ impl ResolvedSet {
                 root: p.root.clone(),
                 on_path: p.on_path,
                 submodules: p.submodules,
+                requested: p.requested.clone(),
             })
             .collect();
         Lockfile {
@@ -298,9 +320,10 @@ pub fn canonical_url(url: &str) -> String {
 /// Report why `lock` is out of date with `manifest`, if it is.
 ///
 /// Checks that every declared git dependency has a lock entry with the same identity and,
-/// for an exact `rev` pin, the same commit; and that the lock holds no package the
-/// manifest no longer leads to (a removed dependency). It does not detect a changed
-/// tag/branch on an unchanged URL (that needs re-resolution).
+/// for an exact `rev` pin, the same commit; that the commit was resolved from the tag,
+/// branch or rev the manifest names now; and that the lock holds no package the manifest
+/// no longer leads to (a removed dependency). A lockfile written before pins recorded
+/// what they were resolved from cannot show a changed tag or branch.
 pub fn lock_staleness(manifest: &Manifest, lock: &Lockfile) -> Option<String> {
     for (name, dep) in &manifest.dependencies {
         let Dependency::Git(git) = dep else {
@@ -328,6 +351,14 @@ pub fn lock_staleness(manifest: &Manifest, lock: &Lockfile) -> Option<String> {
                         "`{name}` rev changed (manifest wants {requested}, lock has {})",
                         pkg.rev
                     ));
+                }
+                // The commit was resolved from something else: another tag or branch, or
+                // a tag where there is now a rev.
+                if let Ok(reference) = git_reference(name, git)
+                    && !pkg.requested.is_empty()
+                    && !pkg.requested.contains(&reference.requested())
+                {
+                    return Some(format!("`{name}` now asks for {}", reference.described()));
                 }
                 // Exposure knobs also affect the environment, so a change makes the lock stale.
                 let want_root = git.root.as_deref().unwrap_or(".");
@@ -454,6 +485,12 @@ impl Resolution<'_> {
                 reason,
             })?;
         }
+
+        // What this manifest asks of a git source, for the lockfile to record.
+        let asked = match dep {
+            Dependency::Git(git) => Some(git_reference(name, git)?.requested()),
+            Dependency::Path(_) | Dependency::Version(_) => None,
+        };
 
         // How to acquire this dependency's content, kept owned so the fetch happens after
         // the name-binding check (below) without borrowing `dep`.
@@ -586,6 +623,12 @@ impl Resolution<'_> {
                 existing.submodules = true;
                 existing.hash = fetched.hash;
             }
+            if let Some(asked) = asked
+                && !existing.requested.contains(&asked)
+            {
+                existing.requested.push(asked);
+                existing.requested.sort();
+            }
             return Ok(());
         }
 
@@ -604,6 +647,7 @@ impl Resolution<'_> {
                 root,
                 on_path,
                 submodules: with_submodules,
+                requested: asked.into_iter().collect(),
                 required_by: required_by.clone(),
             },
         );
@@ -885,6 +929,77 @@ mod tests {
     }
 
     #[test]
+    fn the_lockfile_records_what_every_manifest_asked_of_a_package() {
+        // The root asks for X by tag and A asks for it by branch; both name one commit.
+        let fetcher = FakeFetcher::new()
+            .pkg("https://h/X", &[("v1", "sha_x"), ("main", "sha_x")], None)
+            .pkg(
+                "https://h/A",
+                &[("ra", "sha_a")],
+                Some(
+                    "[project]\nname = \"A\"\n[dependencies]\nX = { git = \"https://h/X\", branch = \"main\" }\n",
+                ),
+            );
+        let root = manifest(
+            "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"ra\" }\nX = { git = \"https://h/X\", tag = \"v1\" }\n",
+        );
+        let lock = resolve(&root, Path::new("."), &fetcher)
+            .unwrap()
+            .to_lockfile();
+        let requested = |name: &str| {
+            let package = lock.packages.iter().find(|p| p.name == name).unwrap();
+            package.requested.clone()
+        };
+        assert_eq!(requested("X"), ["branch:main", "tag:v1"]);
+        assert_eq!(requested("A"), ["rev:ra"]);
+    }
+
+    /// A project whose one dependency, X, is asked for as `ask` (`tag = "v1"`, …). Every
+    /// reference the tests use names the same commit.
+    fn asking_x_for(ask: &str) -> Manifest {
+        manifest(&format!(
+            "[project]\nname = \"p\"\n[dependencies]\nX = {{ git = \"https://h/X\", {ask} }}\n"
+        ))
+    }
+
+    fn lock_of_x_at_tag_v1() -> Lockfile {
+        let fetcher = FakeFetcher::new().pkg("https://h/X", &[("v1", "sha_x")], None);
+        resolve(&asking_x_for("tag = \"v1\""), Path::new("."), &fetcher)
+            .unwrap()
+            .to_lockfile()
+    }
+
+    #[test]
+    fn lock_staleness_sees_a_tag_branch_or_rev_other_than_the_one_resolved() {
+        let lock = lock_of_x_at_tag_v1();
+        let stale = |ask: &str| lock_staleness(&asking_x_for(ask), &lock);
+        assert_eq!(stale("tag = \"v1\""), None);
+        assert_eq!(
+            stale("tag = \"v2\"").as_deref(),
+            Some("`X` now asks for tag `v2`")
+        );
+        // The same name as the other kind is another request.
+        assert_eq!(
+            stale("branch = \"v1\"").as_deref(),
+            Some("`X` now asks for branch `v1`")
+        );
+        // So is the locked commit itself, asked for by rev: the lockfile says "from a
+        // tag", and that is no longer where it comes from.
+        assert_eq!(
+            stale("rev = \"sha_x\"").as_deref(),
+            Some("`X` now asks for commit `sha_x`")
+        );
+    }
+
+    #[test]
+    fn lock_staleness_cannot_see_a_changed_tag_in_a_lockfile_that_recorded_none() {
+        // As an earlier release wrote it. Nothing to compare against, so nothing to report.
+        let mut lock = lock_of_x_at_tag_v1();
+        lock.packages[0].requested.clear();
+        assert_eq!(lock_staleness(&asking_x_for("tag = \"v2\""), &lock), None);
+    }
+
+    #[test]
     fn canonical_url_strips_git_and_slash() {
         assert_eq!(canonical_url("https://x/repo.git"), "https://x/repo");
         assert_eq!(canonical_url("https://x/repo/"), "https://x/repo");
@@ -1124,6 +1239,7 @@ mod tests {
                 root: ".".to_string(),
                 on_path: false,
                 submodules: false,
+                requested: Vec::new(),
             });
             lock
         };
@@ -1150,6 +1266,7 @@ mod tests {
             root: ".".to_string(),
             on_path: false,
             submodules: false,
+            requested: Vec::new(),
         }
     }
 
@@ -1208,6 +1325,7 @@ mod tests {
             root: ".".to_string(), // manifest now wants `src` → stale
             on_path: false,
             submodules: false,
+            requested: Vec::new(),
         });
         assert!(lock_staleness(&root, &lock).is_some());
     }

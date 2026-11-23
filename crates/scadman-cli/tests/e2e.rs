@@ -638,7 +638,12 @@ fn asking_for_submodules_keeps_a_branch_dependency_at_its_locked_commit() {
     let lock = scadman_with_gitconfig(&proj, store.path(), &gitconfig, &["lock"]);
     assert!(lock.status.success());
     let relocked = locked_rev(&proj, "mylib");
-    assert_ne!(relocked, locked, "`lock` follows the branch");
+    assert_eq!(
+        relocked, locked,
+        "`lock` fetches the submodules of the commit it has, not of the branch's tip"
+    );
+    let lockfile = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    assert!(lockfile.contains("submodules = true"), "lock: {lockfile}");
 
     // From here the flag is dropped again, and `sync` re-resolves because of `local`.
     advance_again(&lib);
@@ -1619,6 +1624,151 @@ fn an_environment_that_is_already_right_is_left_alone() {
         fs::read_to_string(env.join("mylib/greet.scad")).unwrap(),
         GREET
     );
+}
+
+/// A project that tracks `mylib`'s branch, locked; returns the project and the library.
+fn tracking_project(root: &Path, store: &StoreHome) -> (PathBuf, PathBuf) {
+    let (lib, _) = make_lib(root);
+    let proj = project_with(
+        root,
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", branch = \"{}\" }}\n",
+            file_url(&lib),
+            current_branch(&lib)
+        ),
+    );
+    let lock = scadman(&proj, store.path(), &["lock"]);
+    assert!(
+        lock.status.success(),
+        "lock failed: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    (proj, lib)
+}
+
+/// Commit new content for `greet.scad` in `lib`.
+fn change(lib: &Path, text: &str) {
+    fs::write(lib.join("greet.scad"), text).unwrap();
+    git(lib, &["add", "-A"]);
+    commit(lib, "change");
+}
+
+#[test]
+fn lock_keeps_a_branch_dependency_at_its_locked_commit() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, lib) = tracking_project(root.path(), &store);
+    let locked = locked_rev(&proj, "mylib");
+    let lockfile = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    assert!(
+        lockfile.contains(&format!(
+            "requested = [\"branch:{}\"]",
+            current_branch(&lib)
+        )),
+        "{lockfile}"
+    );
+    change(&lib, "module greet() { cube(2); }\n");
+
+    let lock = scadman(&proj, store.path(), &["lock"]);
+    assert!(lock.status.success());
+    assert_eq!(
+        locked_rev(&proj, "mylib"),
+        locked,
+        "lock moved a pin nobody asked to move"
+    );
+
+    // `update` is the command that moves it.
+    assert!(scadman(&proj, store.path(), &["update"]).status.success());
+    assert_eq!(locked_rev(&proj, "mylib"), head(&lib));
+}
+
+#[test]
+fn lock_needs_no_network_when_nothing_new_is_asked_for() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, lib) = tracking_project(root.path(), &store);
+    let locked = locked_rev(&proj, "mylib");
+    // The library can no longer be reached.
+    fs::rename(&lib, root.path().join("gone")).unwrap();
+
+    let lock = scadman(&proj, store.path(), &["lock"]);
+
+    assert!(
+        lock.status.success(),
+        "lock failed: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    assert_eq!(locked_rev(&proj, "mylib"), locked);
+}
+
+#[test]
+fn a_changed_tag_makes_the_lockfile_stale_and_lock_follows_it() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, _) = make_lib(root.path());
+    git(&lib, &["tag", "v1"]);
+    let second = "module greet() { cube(2); }\n";
+    change(&lib, second);
+    git(&lib, &["tag", "v2"]);
+    let manifest = |tag: &str| {
+        format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", tag = \"{tag}\" }}\n",
+            file_url(&lib)
+        )
+    };
+    let proj = project_with(root.path(), &manifest("v1"));
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    assert!(scadman(&proj, store.path(), &["sync"]).status.success());
+
+    fs::write(proj.join("scadman.toml"), manifest("v2")).unwrap();
+
+    let sync = scadman(&proj, store.path(), &["sync"]);
+    assert!(!sync.status.success(), "sync built the old tag");
+    let stderr = String::from_utf8_lossy(&sync.stderr);
+    assert!(
+        stderr.contains("out of date") && stderr.contains("tag `v2`"),
+        "{stderr}"
+    );
+    assert!(
+        doctor_line(&proj, &store, "lockfile:").contains("out of date"),
+        "{}",
+        doctor_line(&proj, &store, "lockfile:")
+    );
+
+    let lock = scadman(&proj, store.path(), &["lock"]);
+    assert!(lock.status.success());
+    assert_eq!(locked_rev(&proj, "mylib"), head(&lib));
+    let stdout = String::from_utf8_lossy(&lock.stdout);
+    assert!(stdout.contains("Updated mylib:"), "{stdout}");
+    assert!(scadman(&proj, store.path(), &["sync"]).status.success());
+    let via_env = proj.join(".scadman/env/mylib/greet.scad");
+    assert_eq!(fs::read_to_string(via_env).unwrap(), second);
+}
+
+#[test]
+fn a_lockfile_from_before_pins_recorded_their_source_is_resolved_again_by_lock() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, lib) = tracking_project(root.path(), &store);
+    // As an earlier release wrote it: nothing says which branch the commit came from, so
+    // nothing says the manifest still asks for the same one.
+    let lockfile = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    let earlier: String = lockfile
+        .lines()
+        .filter(|line| !line.starts_with("requested"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    fs::write(proj.join("scadman.lock"), earlier).unwrap();
+    change(&lib, "module greet() { cube(2); }\n");
+
+    let lock = scadman(&proj, store.path(), &["lock"]);
+
+    assert!(lock.status.success());
+    assert_eq!(locked_rev(&proj, "mylib"), head(&lib));
+    let stdout = String::from_utf8_lossy(&lock.stdout);
+    assert!(stdout.contains("Updated mylib:"), "{stdout}");
+    let lockfile = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    assert!(lockfile.contains("requested = [\"branch:"), "{lockfile}");
 }
 
 #[test]
