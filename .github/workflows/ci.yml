@@ -38,6 +38,10 @@ jobs:
       - uses: dorny/paths-filter@v4
         id: filter
         with:
+          # A file counts as code only if it matches every pattern below. Under the
+          # default, `some`, the first pattern matches everything and the two
+          # exclusions change nothing.
+          predicate-quantifier: every
           filters: |
             code:
               - '**'
