@@ -8,6 +8,7 @@ use std::process::Command as ProcCommand;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use scadman_core::source::{RefKind, RefLookup, look_up_ref};
 use scadman_core::{
     Dependency, Environment, Fetched, Fetcher, GitDependency, GitFetcher, GitRef, Installed,
     Lockfile, Manifest, Store, build_environment, canonical_url, fetch_git, lock_staleness,
@@ -846,14 +847,46 @@ fn add_cmd(
     let branch =
         if git.is_some() && path.is_none() && rev.is_none() && tag.is_none() && branch.is_none() {
             let url = git.as_deref().unwrap();
-            let resolved = default_branch(url).with_context(|| {
-                format!("determine the default branch of `{url}` — pass --branch, --tag, or --rev")
+            let resolved = default_branch(url).map_err(|error| {
+                // A reference to follow is only the answer when the repository is there.
+                if error.is::<Unreachable>() {
+                    error.context(format!("add `{name}` from `{url}`"))
+                } else {
+                    error.context(format!(
+                        "determine the default branch of `{url}` — pass --branch, --tag, or --rev"
+                    ))
+                }
             })?;
             defaulted = Some(resolved.clone());
             Some(resolved)
         } else {
             branch
         };
+
+    // A tag or branch that was typed in is checked against the repository, so a mistake
+    // is caught here and not at the next `lock`. With no way to ask, it is taken on
+    // trust: the manifest can be written with no network.
+    if defaulted.is_none()
+        && path.is_none()
+        && let Some(url) = git.as_deref()
+        && let Some((kind, wanted)) = tag
+            .as_deref()
+            .map(|tag| (RefKind::Tag, tag))
+            .or(branch.as_deref().map(|branch| (RefKind::Branch, branch)))
+    {
+        let word = kind.word();
+        match look_up_ref(url, kind, wanted) {
+            RefLookup::Found => {}
+            RefLookup::OtherKind => {
+                let is = kind.other().word();
+                bail!("`{wanted}` is a {is} in `{url}`, not a {word} — use `--{is} {wanted}`");
+            }
+            RefLookup::Missing => bail!("`{url}` has no {word} `{wanted}`"),
+            RefLookup::Unreachable => eprintln!(
+                "warning: could not reach `{url}` to check {word} `{wanted}` — added it unchecked"
+            ),
+        }
+    }
 
     let updated = add_dependency(
         &mut manifest,
@@ -906,6 +939,18 @@ fn suggested_name(url: &str) -> Option<String> {
     Some(name.to_string())
 }
 
+/// A repository that did not answer, with what git said about it.
+#[derive(Debug)]
+struct Unreachable(String);
+
+impl std::fmt::Display for Unreachable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (git: {})", scadman_core::source::UNREACHABLE, self.0)
+    }
+}
+
+impl std::error::Error for Unreachable {}
+
 /// The remote's current default branch (the target of its `HEAD` symref), via
 /// `git ls-remote`. Used when `scadman add <url>` is given no explicit ref.
 fn default_branch(url: &str) -> Result<String> {
@@ -914,10 +959,7 @@ fn default_branch(url: &str) -> Result<String> {
         .output()
         .context("run `git ls-remote` (is git on PATH?)")?;
     if !output.status.success() {
-        bail!(
-            "git ls-remote failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+        return Err(Unreachable(String::from_utf8_lossy(&output.stderr).trim().to_string()).into());
     }
     let text = String::from_utf8_lossy(&output.stdout);
     // A symref line looks like: `ref: refs/heads/main\tHEAD`.

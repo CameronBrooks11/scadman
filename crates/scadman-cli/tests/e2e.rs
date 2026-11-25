@@ -964,6 +964,7 @@ fn project_with(root: &Path, toml: &str) -> PathBuf {
 }
 
 const A_REV: &str = "0123456789abcdef0123456789abcdef01234567";
+const B_REV: &str = "89abcdef0123456789abcdef0123456789abcdef";
 
 /// `add` then `remove` of one dependency in a project whose manifest is `original`;
 /// returns the manifest after each.
@@ -1067,7 +1068,7 @@ fn adding_a_name_again_replaces_that_section_where_it_stands() {
     let add = scadman(
         &proj,
         store.path(),
-        &["add", "a", "https://example.invalid/a", "--tag", "v2"],
+        &["add", "a", "https://example.invalid/a", "--rev", B_REV],
     );
     assert!(
         add.status.success(),
@@ -1078,7 +1079,7 @@ fn adding_a_name_again_replaces_that_section_where_it_stands() {
         fs::read_to_string(proj.join("scadman.toml")).unwrap(),
         format!(
             "[project]\nname = \"demo\"\n\n# first\n[dependencies.a]\n\
-             git = \"https://example.invalid/a\"\ntag = \"v2\"\n\n# second\n\
+             git = \"https://example.invalid/a\"\nrev = \"{B_REV}\"\n\n# second\n\
              [dependencies.b]\ngit = \"https://example.invalid/b\"\nrev = \"{A_REV}\"\n"
         )
     );
@@ -1100,7 +1101,7 @@ fn adding_a_name_again_replaces_that_entry_where_it_stands() {
     let add = scadman(
         &proj,
         store.path(),
-        &["add", "a", "https://example.invalid/a", "--tag", "v2"],
+        &["add", "a", "https://example.invalid/a", "--rev", B_REV],
     );
     assert!(
         add.status.success(),
@@ -1111,7 +1112,7 @@ fn adding_a_name_again_replaces_that_entry_where_it_stands() {
         fs::read_to_string(proj.join("scadman.toml")).unwrap(),
         format!(
             "[project]\nname = \"demo\"\n\n[dependencies]\n# first\n\
-             a = {{ git = \"https://example.invalid/a\", tag = \"v2\" }}\n# second\n\
+             a = {{ git = \"https://example.invalid/a\", rev = \"{B_REV}\" }}\n# second\n\
              b = {{ git = \"https://example.invalid/b\", rev = \"{A_REV}\" }}\n"
         )
     );
@@ -2226,6 +2227,129 @@ fn a_command_run_outside_any_project_still_suggests_init() {
     assert!(stderr.contains("scadman init"), "{stderr}");
 }
 
+/// `scadman add mylib <lib> <flags…>` in a new project under `root`; returns the output
+/// and the manifest afterwards.
+fn add_to_new_project(
+    root: &Path,
+    store: &StoreHome,
+    url: &str,
+    flags: &[&str],
+) -> (Output, String) {
+    let proj = project_with(root, "[project]\nname = \"demo\"\n");
+    let mut args = vec!["add", "mylib", url];
+    args.extend_from_slice(flags);
+    let out = scadman(&proj, store.path(), &args);
+    let manifest = fs::read_to_string(proj.join("scadman.toml")).unwrap();
+    (out, manifest)
+}
+
+const UNTOUCHED: &str = "[project]\nname = \"demo\"\n";
+
+#[test]
+fn add_refuses_a_tag_the_repository_does_not_have() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, _) = make_lib(root.path());
+    let (out, manifest) =
+        add_to_new_project(root.path(), &store, &file_url(&lib), &["--tag", "v99"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("has no tag `v99`"), "{stderr}");
+    assert_eq!(manifest, UNTOUCHED, "the manifest was changed");
+}
+
+#[test]
+fn add_refuses_a_branch_given_as_a_tag_and_names_the_flag() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, _) = make_lib(root.path());
+    let branch = current_branch(&lib);
+    let (out, manifest) =
+        add_to_new_project(root.path(), &store, &file_url(&lib), &["--tag", &branch]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&format!("`{branch}` is a branch"))
+            && stderr.contains(&format!("--branch {branch}")),
+        "{stderr}"
+    );
+    assert_eq!(manifest, UNTOUCHED);
+}
+
+#[test]
+fn add_accepts_a_tag_and_a_branch_the_repository_has() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, _) = make_lib(root.path());
+    git(&lib, &["tag", "v1"]);
+    let branch = current_branch(&lib);
+    for flags in [["--tag", "v1"], ["--branch", branch.as_str()]] {
+        let dir = TempDir::new().unwrap();
+        let (out, manifest) = add_to_new_project(dir.path(), &store, &file_url(&lib), &flags);
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stderr), "", "{flags:?}");
+        assert!(manifest.contains("mylib"), "{manifest}");
+    }
+}
+
+#[test]
+fn add_with_no_reference_says_when_the_repository_cannot_be_reached() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let gone = file_url(&root.path().join("no-such-repository"));
+    let (out, manifest) = add_to_new_project(root.path(), &store, &gone, &[]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("could not reach") && stderr.contains("check the URL"),
+        "{stderr}"
+    );
+    // A reference cannot help when there is no repository to find it in.
+    assert!(!stderr.contains("--branch"), "{stderr}");
+    assert_eq!(manifest, UNTOUCHED);
+}
+
+#[test]
+fn add_with_a_reference_goes_ahead_with_a_warning_when_the_repository_cannot_be_reached() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let gone = file_url(&root.path().join("no-such-repository"));
+    let (out, manifest) = add_to_new_project(root.path(), &store, &gone, &["--tag", "v1"]);
+    // Usable with no network: the manifest is the user's to write.
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning")
+            && stderr.contains("could not reach")
+            && stderr.contains("tag `v1`"),
+        "{stderr}"
+    );
+    assert!(manifest.contains("tag = \"v1\""), "{manifest}");
+}
+
+#[test]
+fn lock_says_when_a_repository_cannot_be_reached() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let gone = root.path().join("no-such-repository");
+    let proj = project_asking(root.path(), &gone, "tag = \"v1\"");
+    let lock = scadman(&proj, store.path(), &["lock"]);
+    assert!(!lock.status.success());
+    let stderr = String::from_utf8_lossy(&lock.stderr);
+    assert!(
+        stderr.contains("could not reach") && stderr.contains("check the URL"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn sync_rejects_a_stale_lockfile() {
     let root = TempDir::new().unwrap();
@@ -2833,8 +2957,8 @@ fn add_remove_and_list() {
                 "add",
                 "BOSL2",
                 "https://github.com/BelfrySCAD/BOSL2",
-                "--tag",
-                "v2.0"
+                "--rev",
+                A_REV
             ],
         )
         .status

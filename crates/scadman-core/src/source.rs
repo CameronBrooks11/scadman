@@ -145,6 +145,76 @@ pub fn remote_has(url: &str, full_name: &str) -> bool {
         })
 }
 
+/// Whether the repository at `url` answers at all.
+pub fn reachable(url: &str) -> bool {
+    git_command()
+        .args(["ls-remote", "--", url, "HEAD"])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+/// What to say when a repository does not answer. Git's own words for it vary with the
+/// host: for a repository that does not exist, GitHub asks for a username.
+pub const UNREACHABLE: &str = "could not reach the repository: it was not found, it needs authentication, or there is no network — check the URL";
+
+/// The two kinds of name a dependency can follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefKind {
+    Tag,
+    Branch,
+}
+
+impl RefKind {
+    /// The kind as a manifest key, a flag and a word in a message.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Tag => "tag",
+            Self::Branch => "branch",
+        }
+    }
+
+    pub fn other(self) -> Self {
+        match self {
+            Self::Tag => Self::Branch,
+            Self::Branch => Self::Tag,
+        }
+    }
+
+    /// The name git knows a tag or branch called `name` by.
+    pub fn full_name(self, name: &str) -> String {
+        match self {
+            Self::Tag => format!("refs/tags/{name}"),
+            Self::Branch => format!("refs/heads/{name}"),
+        }
+    }
+}
+
+/// What a repository has under a tag or branch name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefLookup {
+    /// A reference of the kind asked for.
+    Found,
+    /// None of that kind, but one of the other kind.
+    OtherKind,
+    /// Neither.
+    Missing,
+    /// The repository did not answer.
+    Unreachable,
+}
+
+/// Ask the repository at `url` whether it has the tag or branch `name`.
+pub fn look_up_ref(url: &str, kind: RefKind, name: &str) -> RefLookup {
+    if remote_has(url, &kind.full_name(name)) {
+        RefLookup::Found
+    } else if remote_has(url, &kind.other().full_name(name)) {
+        RefLookup::OtherKind
+    } else if reachable(url) {
+        RefLookup::Missing
+    } else {
+        RefLookup::Unreachable
+    }
+}
+
 fn git(cwd: &Path, args: &[&str]) -> io::Result<std::process::Output> {
     git_command()
         .args(NO_EOL_CONVERSION)

@@ -108,7 +108,7 @@ lives.
 | Command | What it does |
 |---|---|
 | `scadman init [--name N]` | Create `scadman.toml` and ignore `.scadman/`. |
-| `scadman add <name> <git-url>` | Declare a git dependency. `--tag`, `--branch` or `--rev` picks the ref; with none, it tracks the remote's default branch. `--submodules` also fetches its git submodules. |
+| `scadman add <name> <git-url>` | Declare a git dependency. `--tag`, `--branch` or `--rev` picks the ref; with none, it tracks the remote's default branch. A tag or branch is checked against the repository, and refused if it is not there. `--submodules` also fetches its git submodules. |
 | `scadman add <name> --path <dir>` | Declare a local directory as a dependency. |
 | `scadman remove <name>` | Drop a dependency from `scadman.toml`. |
 | `scadman list` | Show declared dependencies and the commit each is locked to. |
