@@ -140,7 +140,7 @@ requested = ["branch:master"]
 | Field | Meaning |
 |---|---|
 | `name` | The name the library is exposed under. |
-| `source` | The git URL, or `path:` followed by the absolute directory of a path dependency. |
+| `source` | The git URL, or `path:` followed by a path dependency's directory, written from the project with `/` (`path:../mylib`). |
 | `rev` | The exact commit. For a path dependency, its content hash. |
 | `hash` | SHA-256 of the library's files: the key of its copy in the store. |
 | `dependencies` | Names of the libraries this one declares, if any. |
@@ -164,7 +164,8 @@ On a machine that does not have a library's content yet, `sync` fetches `rev` fr
 `source` and refuses to continue if the content does not hash to `hash`.
 
 `sync`, `run` and `env` use the lockfile as it is. They create it if it is missing, and
-rewrite it when a path dependency's content has changed. They stop and ask for
+rewrite it when a path dependency's content has changed; with `--locked` they do neither,
+and fail instead. They stop and ask for
 `scadman lock` when the manifest and the lockfile disagree:
 
 - the manifest declares a library the lockfile lacks;

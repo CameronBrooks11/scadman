@@ -89,6 +89,8 @@ The action installs the release it is used at, checked against that release's
 `checksums.txt`, on Linux, macOS or Windows runners, and puts `scadman` on `PATH`. With
 `sync: "true"` it also syncs the project (`working-directory`, default `.`) and exports
 `OPENSCADPATH` for the steps after it. Pass `version:` to install another release.
+Add `locked: "true"` and the step fails when `scadman.lock` is missing or out of date,
+in place of writing one; it needs a release newer than 0.1.0-alpha.10.
 
 GitHub lists a public project among this repository's
 [dependents](https://github.com/CameronBrooks11/scadman/network/dependents) when a file

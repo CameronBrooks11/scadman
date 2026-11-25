@@ -36,8 +36,10 @@ Changing a git dependency's pin in your own manifest still needs an explicit
 - Only the root manifest may declare a path dependency; a dependency of your project
   cannot bring one in.
 - A path dependency is a local-development convenience, not a reproducible pin: the
-  lockfile records the directory's absolute path on your machine, so it is not portable
-  to another one.
+  lockfile records the directory, written from the project (`path:../mylib`), and a
+  hash of what it held when it was locked. The file is the same on every checkout that
+  has the directory in the same place with the same content, and `--locked` fails when
+  the content differs.
 - `scadman update <name>` refuses a path dependency; there is nothing to advance.
 - `--root` and `--on-path` work as with a git source, for a src-layout sibling — see
   [library-roots.md](library-roots.md).

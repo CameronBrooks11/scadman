@@ -10,6 +10,10 @@ inputs:
     description: When "true", run `scadman env` in working-directory, which syncs scadman.lock, and export OPENSCADPATH for later steps.
     required: false
     default: "false"
+  locked:
+    description: When "true", sync with `--locked`, so the step fails if scadman.lock is missing or out of date instead of writing one. Needs a scadman release newer than 0.1.0-alpha.10.
+    required: false
+    default: "false"
   working-directory:
     description: The project to sync.
     required: false
@@ -99,7 +103,12 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       env:
         DIR: ${{ steps.resolve.outputs.dir }}
+        LOCKED: ${{ inputs.locked }}
       run: |
-        path=$("$DIR/scadman" env)
+        if [ "$LOCKED" = "true" ]; then
+          path=$("$DIR/scadman" env --locked)
+        else
+          path=$("$DIR/scadman" env)
+        fi
         echo "OPENSCADPATH=$path" >> "$GITHUB_ENV"
         echo "openscadpath=$path" >> "$GITHUB_OUTPUT"
