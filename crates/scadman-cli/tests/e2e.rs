@@ -1893,6 +1893,135 @@ fn an_annotated_tag_locks_the_commit_it_points_at() {
     assert_eq!(locked_rev(&proj, "mylib"), rev);
 }
 
+/// `scadman doctor` in `proj`: its exit code and what it printed.
+fn doctor(proj: &Path, store: &StoreHome) -> (Option<i32>, String) {
+    let out = scadman(proj, store.path(), &["doctor"]);
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn doctor_exits_zero_for_a_project_in_order() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _, _) = synced_project(root.path(), &store);
+    let (code, report) = doctor(&proj, &store);
+    assert_eq!(code, Some(0), "{report}");
+}
+
+#[test]
+fn doctor_fails_without_a_manifest_and_with_one_that_does_not_parse() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let empty = root.path().join("empty");
+    fs::create_dir_all(&empty).unwrap();
+    let (code, report) = doctor(&empty, &store);
+    assert_eq!(code, Some(1), "{report}");
+
+    let proj = project_with(root.path(), "this is not toml\n");
+    let (code, report) = doctor(&proj, &store);
+    assert_eq!(code, Some(1), "{report}");
+    assert!(report.contains("failed to parse"), "{report}");
+}
+
+#[test]
+fn doctor_fails_on_a_stale_lockfile() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _, _) = synced_project(root.path(), &store);
+    let manifest = fs::read_to_string(proj.join("scadman.toml")).unwrap();
+    fs::write(
+        proj.join("scadman.toml"),
+        format!("{manifest}other = {{ git = \"https://example.invalid/o\", tag = \"v1\" }}\n"),
+    )
+    .unwrap();
+    let (code, report) = doctor(&proj, &store);
+    assert_eq!(code, Some(1), "{report}");
+    assert!(report.contains("out of date"), "{report}");
+}
+
+#[test]
+fn doctor_fails_when_dependencies_are_declared_and_nothing_is_locked() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, _) = make_lib(root.path());
+    let proj = project_asking(root.path(), &lib, "tag = \"v1\"");
+    let (code, report) = doctor(&proj, &store);
+    assert_eq!(code, Some(1), "{report}");
+    assert!(report.contains("not created"), "{report}");
+}
+
+#[test]
+fn doctor_fails_on_a_lockfile_it_cannot_use() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _, _) = synced_project(root.path(), &store);
+    let lock = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    fs::write(
+        proj.join("scadman.lock"),
+        lock.replace("version = 1", "version = 99"),
+    )
+    .unwrap();
+    let (code, report) = doctor(&proj, &store);
+    assert_eq!(code, Some(1), "{report}");
+}
+
+#[test]
+fn doctor_fails_on_stored_content_that_was_modified() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _, entry) = synced_project(root.path(), &store);
+    modify_stored(&entry);
+    let (code, report) = doctor(&proj, &store);
+    assert_eq!(code, Some(1), "{report}");
+    assert!(report.contains("modified in the store"), "{report}");
+}
+
+#[test]
+fn doctor_fails_on_stored_content_that_is_missing() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _, _) = synced_project(root.path(), &store);
+    // As on a machine that has the project and has not synced it.
+    let elsewhere = StoreHome::new();
+    let (code, report) = doctor(&proj, &elsewhere);
+    assert_eq!(code, Some(1), "{report}");
+    assert!(
+        report.contains("`mylib` not in the store") && report.contains("scadman sync"),
+        "{report}"
+    );
+}
+
+#[test]
+fn doctor_only_reports_what_does_not_need_fixing() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+
+    // A new project: no dependencies, so nothing to lock.
+    let fresh = root.path().join("fresh");
+    fs::create_dir_all(&fresh).unwrap();
+    assert!(scadman(&fresh, store.path(), &["init"]).status.success());
+    let (code, report) = doctor(&fresh, &store);
+    assert_eq!(code, Some(0), "{report}");
+
+    // Locked, tracking a branch, with no environment built and no OpenSCAD to be found.
+    let (proj, _) = tracking_project(root.path(), &store);
+    let out = Command::new(env!("CARGO_BIN_EXE_scadman"))
+        .current_dir(&proj)
+        .env("XDG_DATA_HOME", store.path())
+        .env("OPENSCAD", root.path().join("no-such-openscad"))
+        .arg("doctor")
+        .output()
+        .unwrap();
+    let report = String::from_utf8_lossy(&out.stdout);
+    assert!(report.contains("openscad:     not found"), "{report}");
+    assert!(report.contains("tracking:"), "{report}");
+    assert!(report.contains("environment:  not built"), "{report}");
+    assert_eq!(out.status.code(), Some(0), "{report}");
+}
+
 #[test]
 fn sync_rejects_a_stale_lockfile() {
     let root = TempDir::new().unwrap();
@@ -2698,9 +2827,10 @@ fn doctor_distinguishes_a_broken_manifest_from_a_missing_one() {
         "[project]\nname = \"d\"\n\n[dependencies]\nmylib = { git = 42 }\n",
     );
     let out = scadman(&broken, store.path(), &["doctor"]);
-    assert!(
-        out.status.success(),
-        "doctor is a diagnostic; it should still report"
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a manifest that does not parse needs fixing; doctor still reports in full"
     );
     let text = String::from_utf8_lossy(&out.stdout);
     let line = manifest_line(&text);
@@ -2904,7 +3034,8 @@ fn doctor_reports_setup() {
         ),
     );
     let out = scadman(&proj, store.path(), &["doctor"]);
-    assert!(out.status.success());
+    // Nothing is locked yet, which needs fixing; the report is still complete.
+    assert_eq!(out.status.code(), Some(1));
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         text.contains("manifest:") && text.contains("lockfile:") && text.contains("environment:")

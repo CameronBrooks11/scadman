@@ -135,7 +135,12 @@ fn main() -> Result<()> {
         Command::Update { names } => update_cmd(names),
         Command::Sync { verify } => sync_cmd(verify).map(|_| ()),
         Command::Env { json, write_vscode } => env_cmd(json, write_vscode),
-        Command::Doctor => doctor_cmd(),
+        Command::Doctor => {
+            if !doctor_cmd()? {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Command::Graph { json } => graph_cmd(json),
         Command::Run { args } => {
             let code = run_cmd(args).unwrap_or_else(|error| {
@@ -375,7 +380,10 @@ fn workspace_relative_to(openscadpath: &str, cwd: &str) -> String {
         .join(&PATH_LIST_SEPARATOR.to_string())
 }
 
-fn doctor_cmd() -> Result<()> {
+/// Print the report, and say whether the project is in order: `false` when something
+/// in it needs fixing before it can be relied on.
+fn doctor_cmd() -> Result<bool> {
+    let mut in_order = true;
     let installed = openscad_version();
     let program = openscad_program();
     match &installed {
@@ -410,6 +418,7 @@ fn doctor_cmd() -> Result<()> {
                 "manifest:     {} not found — run `scadman init`",
                 manifest::MANIFEST_FILE
             );
+            in_order = false;
             None
         }
         Err(e) => {
@@ -417,6 +426,7 @@ fn doctor_cmd() -> Result<()> {
                 "manifest:     {} cannot be read — {e}",
                 manifest::MANIFEST_FILE
             );
+            in_order = false;
             None
         }
         Ok(text) => match Manifest::from_root_toml(&text) {
@@ -434,6 +444,7 @@ fn doctor_cmd() -> Result<()> {
                     "manifest:     {} failed to parse — {e}",
                     manifest::MANIFEST_FILE
                 );
+                in_order = false;
                 None
             }
         },
@@ -458,10 +469,12 @@ fn doctor_cmd() -> Result<()> {
             };
             println!("requires:     {line}");
         }
-        if let Some(lock) = report_lockfile(m)
+        let (lock, lock_in_order) = report_lockfile(m);
+        in_order &= lock_in_order;
+        if let Some(lock) = lock
             && let Some(root) = Store::default_root()
         {
-            report_content(&lock, &Store::new(root));
+            in_order &= report_content(&lock, &Store::new(root));
         }
         let tracking = m
             .dependencies
@@ -490,7 +503,7 @@ fn doctor_cmd() -> Result<()> {
     } else {
         println!("environment:  not built");
     }
-    Ok(())
+    Ok(in_order)
 }
 
 /// The singular or plural noun for a count (e.g. `plural(1, "package", "packages")`).
@@ -498,22 +511,25 @@ fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
     if n == 1 { one } else { many }
 }
 
-/// Print the `lockfile:` line, and hand back the lockfile if it could be read.
-fn report_lockfile(manifest: &Manifest) -> Option<Lockfile> {
+/// Print the `lockfile:` line. Hands back the lockfile if it could be read, and whether
+/// it is in order: there when the manifest needs one, readable, and up to date.
+fn report_lockfile(manifest: &Manifest) -> (Option<Lockfile>, bool) {
     if !Path::new(lockfile::LOCKFILE_FILE).exists() {
         println!("lockfile:     not created — run `scadman lock`");
-        return None;
+        // A project with no dependencies has nothing to lock yet.
+        return (None, manifest.dependencies.is_empty());
     }
     let text = fs::read_to_string(lockfile::LOCKFILE_FILE).ok();
     if let Some(Err(e)) = text.as_deref().map(check_lockfile_version) {
         println!("lockfile:     {e}");
-        return None;
+        return (None, false);
     }
     let lock = text.and_then(|t| Lockfile::from_toml(&t).ok());
-    match &lock {
+    let in_order = match &lock {
         Some(lock) => match lock_staleness(manifest, lock) {
             Some(reason) => {
-                println!("lockfile:     out of date ({reason}) — run `scadman lock`")
+                println!("lockfile:     out of date ({reason}) — run `scadman lock`");
+                false
             }
             None => {
                 let n = lock.packages.len();
@@ -521,23 +537,31 @@ fn report_lockfile(manifest: &Manifest) -> Option<Lockfile> {
                     "lockfile:     {} ({n} {}, up to date)",
                     lockfile::LOCKFILE_FILE,
                     plural(n, "package", "packages")
-                )
+                );
+                true
             }
         },
-        None => println!("lockfile:     present but unreadable"),
-    }
-    lock
+        None => {
+            println!("lockfile:     present but unreadable");
+            false
+        }
+    };
+    (lock, in_order)
 }
 
-/// Print the `content:` line: whether each locked library's copy in the store still
-/// hashes to what the lockfile pins. Says nothing when none of them is in the store yet.
-fn report_content(lock: &Lockfile, store: &Store) {
+/// Print the `content:` line: whether each locked library has a copy in the store that
+/// still hashes to what the lockfile pins. Returns whether all of them do.
+fn report_content(lock: &Lockfile, store: &Store) -> bool {
     let mut checked = 0;
     let mut modified = Vec::new();
+    let mut missing = Vec::new();
     for package in &lock.packages {
         // The hash becomes a path, and this lockfile has not been through `parse_lockfile`.
-        if validate_content_hash(&package.hash).is_err() || !store.path_for(&package.hash).exists()
-        {
+        if validate_content_hash(&package.hash).is_err() {
+            continue;
+        }
+        if !store.path_for(&package.hash).exists() {
+            missing.push(format!("`{}`", package.name));
             continue;
         }
         checked += 1;
@@ -550,6 +574,11 @@ fn report_content(lock: &Lockfile, store: &Store) {
             "content:      {} modified in the store — run `scadman sync --verify` to restore",
             modified.join(", ")
         );
+    } else if !missing.is_empty() {
+        println!(
+            "content:      {} not in the store — run `scadman sync` to fetch",
+            missing.join(", ")
+        );
     } else if checked > 0 {
         let total = lock.packages.len();
         println!(
@@ -557,6 +586,7 @@ fn report_content(lock: &Lockfile, store: &Store) {
             plural(total, "package", "packages")
         );
     }
+    modified.is_empty() && missing.is_empty()
 }
 
 /// Where scadman looks for OpenSCAD, for messages that say it was not found.
