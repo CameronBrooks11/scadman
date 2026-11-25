@@ -1278,9 +1278,28 @@ fn write_dependencies(manifest: &Manifest) -> Result<()> {
 }
 
 fn load_manifest() -> Result<Manifest> {
-    let text = fs::read_to_string(manifest::MANIFEST_FILE)
-        .with_context(|| format!("read {} (run `scadman init`?)", manifest::MANIFEST_FILE))?;
+    let text = fs::read_to_string(manifest::MANIFEST_FILE).with_context(|| {
+        // Run from a folder inside a project, `init` is the wrong advice: it would
+        // start a second project there.
+        match enclosing_project() {
+            Some(project) => format!(
+                "read {}: this folder is inside the project at {} — run it from there",
+                manifest::MANIFEST_FILE,
+                project.display()
+            ),
+            None => format!("read {} (run `scadman init`?)", manifest::MANIFEST_FILE),
+        }
+    })?;
     Manifest::from_root_toml(&text).with_context(|| format!("parse {}", manifest::MANIFEST_FILE))
+}
+
+/// The nearest folder above the current one that holds a `scadman.toml`.
+fn enclosing_project() -> Option<PathBuf> {
+    let here = std::env::current_dir().ok()?.canonicalize().ok()?;
+    here.ancestors()
+        .skip(1)
+        .find(|dir| dir.join(manifest::MANIFEST_FILE).is_file())
+        .map(Path::to_path_buf)
 }
 
 fn open_store() -> Result<Store> {

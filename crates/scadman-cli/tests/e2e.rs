@@ -2194,6 +2194,39 @@ fn output_into_a_closed_pipe_ends_quietly() {
 }
 
 #[test]
+fn a_command_run_below_the_project_says_where_the_project_is() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _, _) = synced_project(root.path(), &store);
+    let below = proj.join("parts").join("lid");
+    fs::create_dir_all(&below).unwrap();
+
+    for command in ["sync", "list", "lock"] {
+        let out = scadman(&below, store.path(), &[command]);
+        assert!(!out.status.success(), "{command}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let project = proj.canonicalize().unwrap();
+        assert!(
+            stderr.contains(&project.display().to_string()) && stderr.contains("run it from there"),
+            "{command}: {stderr}"
+        );
+        // Following this hint would put a second project inside the first.
+        assert!(!stderr.contains("scadman init"), "{command}: {stderr}");
+    }
+    assert!(!below.join("scadman.toml").exists());
+}
+
+#[test]
+fn a_command_run_outside_any_project_still_suggests_init() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let out = scadman(root.path(), store.path(), &["sync"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("scadman init"), "{stderr}");
+}
+
+#[test]
 fn sync_rejects_a_stale_lockfile() {
     let root = TempDir::new().unwrap();
     let store = StoreHome::new();
