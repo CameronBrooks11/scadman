@@ -8,6 +8,13 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ### Changed
 
+- **`scadman doctor` exits 1 when the project needs fixing** (#157), so it can be a CI
+  or pre-commit check. That is: no `scadman.toml` or one that cannot be read, a lockfile
+  that is missing while dependencies are declared, unreadable or out of date, and a
+  locked library whose stored copy is missing or modified. A missing or older OpenSCAD,
+  an environment not built yet and a dependency that tracks a branch or tag are
+  reported and leave the exit code at 0. A library that is locked but not in the store
+  now has its own line in the report.
 - **`tag` names only a tag and `branch` only a branch** (#154). Each key used to accept
   either kind of name, and a repository with a tag and a branch of the same name
   resolved to whichever git preferred. A name of the other kind now fails at `lock`

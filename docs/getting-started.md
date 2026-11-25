@@ -116,13 +116,20 @@ lives.
 | `scadman run -- <openscad args>` | Sync, then run OpenSCAD with the environment on `OPENSCADPATH`. |
 | `scadman env [--json \| --write-vscode]` | Sync, then print the `OPENSCADPATH` for editors and tools. |
 | `scadman graph [--json]` | Print the locked dependency graph. |
-| `scadman doctor` | Report on OpenSCAD, the store, the manifest, the lockfile, whether the stored libraries are unmodified, and the environment. |
+| `scadman doctor` | Report on OpenSCAD, the store, the manifest, the lockfile, whether the stored libraries are present and unmodified, and the environment. Exits 1 when the project needs fixing. |
 
 `scadman run` exits with the code OpenSCAD exited with, so a script can treat it as
 `openscad` itself. If scadman fails before OpenSCAD has started (a stale lockfile, a
 dependency it cannot fetch, no OpenSCAD found) it prints the error and exits 125. Every
 other command exits 0 on success and 1 on failure; a mistake in the command line itself
 exits 2.
+
+`scadman doctor` always prints its whole report. It exits 1 when something in the
+project needs fixing: `scadman.toml` is missing or cannot be read, the lockfile is
+missing while dependencies are declared, unreadable or out of date, or a locked library's
+copy in the store is missing or modified. OpenSCAD not being found or being older than
+the project asks for, an environment that is not built yet, and a dependency that tracks
+a branch or tag are reported without changing the exit code.
 
 A branch or tag is pinned to an exact commit at lock time and stays there until you run
 `scadman update`. A `--rev` pin never moves; give it the full 40-character commit hash,
