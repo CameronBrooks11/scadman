@@ -18,7 +18,7 @@ use crate::manifest::{
     Dependency, GitDependency, MANIFEST_FILE, Manifest, PathDependency, validate_commit_hash,
     validate_library_root, validate_package_name,
 };
-use crate::source::fetch_git;
+use crate::source::{fetch_git, remote_has};
 use crate::store::Store;
 
 /// Backstop against pathological depth (cycles already terminate via identity unification).
@@ -120,7 +120,35 @@ impl Fetcher for GitFetcher {
         if let GitRef::Rev(rev) = reference {
             validate_commit_hash(rev).map_err(io::Error::other)?;
         }
-        let acquired = fetch_git(&self.store, url, reference.as_str(), submodules)?;
+        // A tag and a branch are asked for by their full names, so that each key finds
+        // only its own kind and a repository with both under one name is not a guess.
+        let (asked, other) = match reference {
+            GitRef::Rev(rev) => (rev.clone(), None),
+            GitRef::Tag(tag) => (
+                format!("refs/tags/{tag}"),
+                Some(("tag", "branch", format!("refs/heads/{tag}"))),
+            ),
+            GitRef::Branch(branch) => (
+                format!("refs/heads/{branch}"),
+                Some(("branch", "tag", format!("refs/tags/{branch}"))),
+            ),
+        };
+        let acquired = match fetch_git(&self.store, url, &asked, submodules) {
+            Ok(acquired) => acquired,
+            Err(error) => {
+                let name = reference.as_str();
+                return Err(match other {
+                    // Not there under the kind that was asked for: say what is.
+                    Some((_, kind, full)) if remote_has(url, &full) => io::Error::other(format!(
+                        "`{name}` is a {kind} in this repository — write `{kind} = \"{name}\"`"
+                    )),
+                    Some((kind, _, _)) if !remote_has(url, &asked) && remote_has(url, "HEAD") => {
+                        io::Error::other(format!("this repository has no {kind} `{name}`"))
+                    }
+                    _ => error,
+                });
+            }
+        };
         self.note(&acquired.entry);
         Ok(Fetched {
             rev: acquired.rev,

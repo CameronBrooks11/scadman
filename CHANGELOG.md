@@ -6,6 +6,13 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Changed
+
+- **`tag` names only a tag and `branch` only a branch** (#154). Each key used to accept
+  either kind of name, and a repository with a tag and a branch of the same name
+  resolved to whichever git preferred. A name of the other kind now fails at `lock`
+  with the key to use, and a name the repository does not have is reported as such.
+
 ## [0.1.0-alpha.10] — 2026-11-23
 
 Tenth alpha. Fixes for what a new user meets in the first hour: `lock` no longer moves

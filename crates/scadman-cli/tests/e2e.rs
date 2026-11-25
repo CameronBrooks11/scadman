@@ -1771,6 +1771,128 @@ fn a_lockfile_from_before_pins_recorded_their_source_is_resolved_again_by_lock()
     assert!(lockfile.contains("requested = [\"branch:"), "{lockfile}");
 }
 
+/// A project whose one dependency is `lib`, asked for as `ask` (`tag = "v1"`, …).
+fn project_asking(root: &Path, lib: &Path, ask: &str) -> PathBuf {
+    project_with(
+        root,
+        &format!(
+            "[project]\nname = \"demo\"\n\n[dependencies]\nmylib = {{ git = \"{}\", {ask} }}\n",
+            file_url(lib)
+        ),
+    )
+}
+
+#[test]
+fn a_tag_key_naming_a_branch_is_refused_with_the_key_to_use() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, _) = make_lib(root.path());
+    let branch = current_branch(&lib);
+    let proj = project_asking(root.path(), &lib, &format!("tag = \"{branch}\""));
+
+    let lock = scadman(&proj, store.path(), &["lock"]);
+
+    assert!(!lock.status.success(), "a branch was locked as a tag");
+    let stderr = String::from_utf8_lossy(&lock.stderr);
+    assert!(
+        stderr.contains(&format!("`{branch}` is a branch"))
+            && stderr.contains(&format!("branch = \"{branch}\"")),
+        "{stderr}"
+    );
+    assert!(!proj.join("scadman.lock").exists());
+}
+
+#[test]
+fn a_branch_key_naming_a_tag_is_refused_with_the_key_to_use() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, _) = make_lib(root.path());
+    git(&lib, &["tag", "v1"]);
+    let proj = project_asking(root.path(), &lib, "branch = \"v1\"");
+
+    let lock = scadman(&proj, store.path(), &["lock"]);
+
+    assert!(!lock.status.success(), "a tag was locked as a branch");
+    let stderr = String::from_utf8_lossy(&lock.stderr);
+    assert!(
+        stderr.contains("`v1` is a tag") && stderr.contains("tag = \"v1\""),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_name_that_is_neither_is_reported_as_not_found() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, _) = make_lib(root.path());
+    let proj = project_asking(root.path(), &lib, "tag = \"v99\"");
+
+    let lock = scadman(&proj, store.path(), &["lock"]);
+
+    assert!(!lock.status.success());
+    let stderr = String::from_utf8_lossy(&lock.stderr);
+    assert!(stderr.contains("has no tag `v99`"), "{stderr}");
+}
+
+#[test]
+fn a_tag_and_a_branch_of_one_name_each_resolve_to_their_own_commit() {
+    let root = TempDir::new().unwrap();
+    let (lib, tagged) = make_lib(root.path());
+    // The tag `same` stays on the first commit; the branch `same` moves on.
+    git(&lib, &["tag", "same"]);
+    git(&lib, &["switch", "--quiet", "-c", "same"]);
+    change(&lib, "module greet() { cube(2); }\n");
+    let branch_tip = head(&lib);
+    assert_ne!(tagged, branch_tip);
+
+    for (ask, expected) in [
+        ("tag = \"same\"", &tagged),
+        ("branch = \"same\"", &branch_tip),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let store = StoreHome::new();
+        let proj = project_asking(dir.path(), &lib, ask);
+        let lock = scadman(&proj, store.path(), &["lock"]);
+        assert!(
+            lock.status.success(),
+            "{ask}: {}",
+            String::from_utf8_lossy(&lock.stderr)
+        );
+        assert_eq!(&locked_rev(&proj, "mylib"), expected, "{ask}");
+    }
+}
+
+#[test]
+fn an_annotated_tag_locks_the_commit_it_points_at() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, rev) = make_lib(root.path());
+    git(
+        &lib,
+        &[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "tag",
+            "-a",
+            "v1",
+            "-m",
+            "one",
+        ],
+    );
+    let proj = project_asking(root.path(), &lib, "tag = \"v1\"");
+
+    let lock = scadman(&proj, store.path(), &["lock"]);
+
+    assert!(
+        lock.status.success(),
+        "{}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    assert_eq!(locked_rev(&proj, "mylib"), rev);
+}
+
 #[test]
 fn sync_rejects_a_stale_lockfile() {
     let root = TempDir::new().unwrap();

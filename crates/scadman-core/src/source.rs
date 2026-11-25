@@ -130,6 +130,21 @@ pub fn git_command() -> Command {
     command
 }
 
+/// Whether the repository at `url` has the reference `full_name` (`refs/tags/v1`,
+/// `refs/heads/main`, `HEAD`). False when it cannot be asked.
+pub fn remote_has(url: &str, full_name: &str) -> bool {
+    git_command()
+        .args(["ls-remote", "--exit-code", "--", url, full_name])
+        .output()
+        .is_ok_and(|output| {
+            // The pattern matches by trailing path, so check the name that came back.
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .any(|line| line.split('\t').nth(1) == Some(full_name))
+        })
+}
+
 fn git(cwd: &Path, args: &[&str]) -> io::Result<std::process::Output> {
     git_command()
         .args(NO_EOL_CONVERSION)
