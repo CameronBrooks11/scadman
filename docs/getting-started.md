@@ -154,6 +154,17 @@ not catch every edit. The details are in [Manifest and lockfile](manifest.md).
   and import relative to it. Add them with `--root src --on-path`. See
   [Library roots](library-roots.md).
 
+## MCAD
+
+OpenSCAD 2021.01 ships MCAD, so `use <MCAD/…>` works there with nothing declared. Builds
+of OpenSCAD made after 2026-11-19 no longer include it. Declaring it gives the project
+the same copy with either:
+
+```sh
+scadman add MCAD https://github.com/openscad/MCAD --tag 2026.11
+scadman lock
+```
+
 ## Undeclared imports
 
 Many libraries pull in others without declaring it; `agentscad`, for example, uses

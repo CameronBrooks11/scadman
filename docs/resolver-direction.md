@@ -97,6 +97,13 @@ conflicts; rewrite source; nest versions; touch a registry; manage global instal
 5. **Bundled libs (MCAD):** fetchable in v1, no special "provided" casing. It is
    shadowable via `OPENSCADPATH`, so a pinned copy is reproducible.
 
+   *Since then:* OpenSCAD removed MCAD from its tree on 2026-11-19
+   ([openscad#7226](https://github.com/openscad/openscad/pull/7226)). The 2021.01
+   release still bundles it; builds made after that date do not, and tell the user to
+   download it into their library folder. So the choice above now does more than pin a
+   bundled library: for those builds, declaring MCAD as a dependency is how a project
+   gets it at all.
+
 ## Corrections carried forward
 
 - MCAD **is** shadowable via `OPENSCADPATH` — scadman can manage the most-depended-on library.

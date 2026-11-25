@@ -71,6 +71,14 @@ for Rust tooling. MPL's file-level copyleft bought nothing scadman needs.
 
 **Decision:** read olman for design and behavior; share no code and no metadata.
 
+olman is the OpenSCAD project's own library manager
+([openscad-library-manager](https://github.com/openscad/openscad-library-manager)),
+begun as a Google Summer of Code project in 2024. This decision and D1 were made while
+it was under development. On 2026-06-29 its maintainer wrote, in the OpenSCAD
+package-manager discussion
+([openscad#3479](https://github.com/openscad/openscad/issues/3479)), that it was not
+moving. The comparisons with olman in these records describe it as it stood then.
+
 In particular, the registry is **not** seeded from olman's `accepted_repositories` /
 `remote_index.json`: the survey built its own repository list from primary sources
 (openscad.org/libraries.html, GitHub topic search), using olman's list only as a
@@ -126,7 +134,9 @@ include-scan warning; overrides deferred entirely (unknown keys in dependency
 tables are rejected, so a new per-dependency key never changes what an existing
 manifest means, though an older scadman refuses a library that uses one); branch
 refs allowed but
-SHA-locked; OpenSCAD's bundled MCAD is fetchable and shadowable via `OPENSCADPATH`.
+SHA-locked; MCAD, which OpenSCAD bundled when this was decided, is fetchable and
+shadowable via `OPENSCADPATH` (OpenSCAD has since stopped bundling it: see
+[resolver-direction.md](resolver-direction.md)).
 Full rationale in [resolver-direction.md](resolver-direction.md).
 
 ## Summary
