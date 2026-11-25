@@ -52,7 +52,7 @@ struct StrictProject {
 
 /// A single dependency, accepting either a bare version string or a detailed table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, try_from = "toml::Value")]
 pub enum Dependency {
     /// `Name = "^2.0"` — a version constraint, resolved via a registry (future).
     Version(String),
@@ -60,6 +60,75 @@ pub enum Dependency {
     Git(GitDependency),
     /// `Name = { path = "…" }` — a local path source.
     Path(PathDependency),
+}
+
+/// How the error for a dependency key scadman does not know begins. A library's manifest
+/// that fails this way may have been written for a newer scadman, and the resolver says so.
+pub const UNKNOWN_KEY: &str = "unknown key";
+
+const GIT_KEYS: [&str; 7] = [
+    "git",
+    "rev",
+    "tag",
+    "branch",
+    "root",
+    "on_path",
+    "submodules",
+];
+const PATH_KEYS: [&str; 3] = ["path", "root", "on_path"];
+const TRUE_OR_FALSE_KEYS: [&str; 2] = ["on_path", "submodules"];
+
+/// Reads a dependency and says what is wrong with one in the manifest's own words. Left
+/// to serde, each form fails for its own reason and only "none matched" is reported.
+impl TryFrom<toml::Value> for Dependency {
+    type Error = String;
+
+    fn try_from(value: toml::Value) -> Result<Self, String> {
+        let table = match value {
+            toml::Value::String(version) => return Ok(Self::Version(version)),
+            toml::Value::Table(table) => table,
+            other => {
+                return Err(format!(
+                    "a dependency is a table such as `{{ git = \"…\", tag = \"…\" }}`, not {}",
+                    other.type_str()
+                ));
+            }
+        };
+        let (kind, known): (&str, &[&str]) =
+            match (table.contains_key("git"), table.contains_key("path")) {
+                (true, true) => return Err("a dependency sets `git` or `path`, not both".into()),
+                (false, false) => return Err("a dependency needs `git` or `path`".into()),
+                (true, false) => ("git", &GIT_KEYS),
+                (false, true) => ("path", &PATH_KEYS),
+            };
+        for (key, value) in &table {
+            if !known.contains(&key.as_str()) {
+                let keys: Vec<String> = known.iter().map(|k| format!("`{k}`")).collect();
+                return Err(format!(
+                    "{UNKNOWN_KEY} `{key}` — a {kind} dependency takes {}",
+                    keys.join(", ")
+                ));
+            }
+            let (expected, right) = if TRUE_OR_FALSE_KEYS.contains(&key.as_str()) {
+                ("true or false", value.is_bool())
+            } else {
+                ("a string", value.is_str())
+            };
+            if !right {
+                return Err(format!(
+                    "`{key}` must be {expected} (found a value of type {})",
+                    value.type_str()
+                ));
+            }
+        }
+        let table = toml::Value::Table(table);
+        if kind == "git" {
+            table.try_into().map(Self::Git)
+        } else {
+            table.try_into().map(Self::Path)
+        }
+        .map_err(|error: toml::de::Error| error.message().to_string())
+    }
 }
 
 /// A Git dependency. Prefer `rev` for reproducibility; `tag`/`branch` are resolved to an
@@ -515,6 +584,70 @@ local-lib = { path = "../local-lib" }
             "future = 1\n\n[project]\nname = \"lib\"\nlicense = \"MIT\"\n\n[future-table]\nx = 1\n";
         let m = Manifest::from_toml(text).expect("tolerant parse");
         assert_eq!(m.project.name, "lib");
+    }
+
+    /// The error from parsing a project whose one dependency table is `table`.
+    fn dependency_error(table: &str) -> String {
+        let text = format!("[project]\nname = \"p\"\n\n[dependencies]\nlib = {table}\n");
+        Manifest::from_root_toml(&text).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn a_misspelled_dependency_key_is_named_with_the_keys_that_exist() {
+        let error = dependency_error("{ git = \"https://x/lib\", brunch = \"main\" }");
+        assert!(error.contains("unknown key `brunch`"), "{error}");
+        assert!(
+            error.contains("`branch`") && error.contains("`submodules`"),
+            "{error}"
+        );
+        // A path dependency has its own, shorter list.
+        let error = dependency_error("{ path = \"../lib\", tag = \"v1\" }");
+        assert!(error.contains("unknown key `tag`"), "{error}");
+        assert!(!error.contains("`branch`"), "{error}");
+    }
+
+    #[test]
+    fn a_dependency_with_neither_git_nor_path_says_one_is_needed() {
+        let error = dependency_error("{ tag = \"v1\" }");
+        assert!(error.contains("needs `git` or `path`"), "{error}");
+    }
+
+    #[test]
+    fn a_dependency_with_both_git_and_path_says_to_pick_one() {
+        let error = dependency_error("{ git = \"https://x/lib\", path = \"../lib\" }");
+        assert!(error.contains("`git` or `path`, not both"), "{error}");
+    }
+
+    #[test]
+    fn a_dependency_value_of_the_wrong_type_names_its_key() {
+        let error =
+            dependency_error("{ git = \"https://x/lib\", tag = \"v1\", on_path = \"yes\" }");
+        assert!(
+            error.contains("`on_path`") && error.contains("true or false"),
+            "{error}"
+        );
+        let error = dependency_error("{ git = 42 }");
+        assert!(
+            error.contains("`git`") && error.contains("a string"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn no_dependency_error_names_a_rust_type() {
+        for table in [
+            "{ git = \"https://x/lib\", brunch = \"main\" }",
+            "{ tag = \"v1\" }",
+            "{ git = \"https://x/lib\", path = \"../lib\" }",
+            "{ git = 42 }",
+            "42",
+        ] {
+            let error = dependency_error(table);
+            assert!(
+                !error.contains("enum") && !error.contains("variant"),
+                "{table}: {error}"
+            );
+        }
     }
 
     #[test]

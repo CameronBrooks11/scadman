@@ -111,6 +111,13 @@ under the same one-version rule. It may not declare path dependencies. Unknown k
 in a dependency's manifest are ignored, apart from those inside its dependency tables,
 so a library written for a newer scadman stays readable.
 
+A key inside a dependency table that scadman does not know is an error wherever it is
+read, in your manifest or a library's. Such a key can change what is fetched, as
+`submodules` does, so skipping it would give different content from what was asked for.
+When it is a library's manifest, the error names the library and the key and says the
+library may need a newer scadman. So a new key in a dependency table is a breaking
+change for every older scadman that meets a library using it.
+
 Almost no OpenSCAD library ships a manifest today. When a library imports another
 without declaring it, `sync` names the missing library and you add it to your own
 manifest.
@@ -146,6 +153,12 @@ submodules and `1` otherwise, so a project that does not use submodules keeps a
 lockfile that scadman 0.1.0-alpha.8 and earlier still read. Every command refuses a
 lockfile whose version it does not know, and `lock` and `update` will not overwrite
 one: upgrade scadman, or delete the file to write a fresh one.
+
+The rule for changing the format: a field that an older scadman can ignore and still
+build the same environment is added without changing `version`, and older releases skip
+a key they do not know inside a package. `requested` came that way. Anything an older
+scadman cannot safely ignore changes `version`, which it refuses. That covers how `hash`
+is computed: the hash is written bare, and the `version` fixes what it means.
 
 On a machine that does not have a library's content yet, `sync` fetches `rev` from
 `source` and refuses to continue if the content does not hash to `hash`.

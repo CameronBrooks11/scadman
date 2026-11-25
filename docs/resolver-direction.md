@@ -89,7 +89,9 @@ conflicts; rewrite source; nest versions; touch a registry; manage global instal
 2. **Manifest-less transitive deps:** the user declares them directly; the include-scan
    guides them. No curated metadata overlay in v1.
 3. **Overrides:** deferred entirely. Dependency tables reject unknown keys, so adding
-   per-dependency override syntax later is a non-breaking change; the hard
+   per-dependency override syntax later changes no existing manifest's meaning. It is
+   still breaking in one direction: an older scadman refuses a library whose manifest
+   uses the new key (see [the manifest reference](manifest.md)). The hard
    identity-conflict error must not promise a remedy that doesn't exist yet.
 4. **Branch refs:** allowed, but always locked to an exact SHA in the lockfile.
 5. **Bundled libs (MCAD):** fetchable in v1, no special "provided" casing. It is
