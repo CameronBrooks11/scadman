@@ -347,6 +347,7 @@ version = "0.1.0-alpha.10"
 dependencies = [
  "anyhow",
  "clap",
+ "libc",
  "scadman-core",
  "serde",
  "serde_json",

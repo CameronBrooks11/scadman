@@ -2166,6 +2166,33 @@ fn locked_refuses_a_path_dependency_whose_content_has_changed() {
     assert_ne!(fs::read_to_string(proj.join("scadman.lock")).unwrap(), lock);
 }
 
+#[cfg(unix)]
+#[test]
+fn output_into_a_closed_pipe_ends_quietly() {
+    use std::os::unix::process::ExitStatusExt;
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _, _) = synced_project(root.path(), &store);
+
+    // What `scadman doctor | head -1` comes to once `head` has gone: a pipe nobody reads.
+    for command in ["doctor", "list", "graph"] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let out = Command::new(env!("CARGO_BIN_EXE_scadman"))
+            .current_dir(&proj)
+            .env("XDG_DATA_HOME", store.path())
+            .arg(command)
+            .stdout(writer)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("panicked"), "{command}: {stderr}");
+        assert_eq!(stderr, "", "{command}");
+        // Ended by the signal, as `cat` or `ls` would be.
+        assert_eq!(out.status.signal(), Some(13), "{command}: {:?}", out.status);
+    }
+}
+
 #[test]
 fn sync_rejects_a_stale_lockfile() {
     let root = TempDir::new().unwrap();

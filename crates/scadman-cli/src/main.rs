@@ -126,6 +126,15 @@ enum Command {
 }
 
 fn main() -> Result<()> {
+    // Rust starts a program ignoring SIGPIPE, so writing to a pipe whose reader has gone
+    // (`scadman doctor | head -1`) fails, and `println!` panics on the failure. Take the
+    // signal as other command-line tools do: end quietly.
+    #[cfg(unix)]
+    // SAFETY: called once, before any thread is started or anything is written; it sets
+    // one signal back to its default action.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     match Cli::parse().command {
         Command::Init { name } => init_cmd(name),
         Command::Add {
