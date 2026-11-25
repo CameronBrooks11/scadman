@@ -3058,6 +3058,41 @@ fn env_reports_path_and_json() {
     );
 }
 
+/// The repository and pinned commit of the library `name` in `fixtures/archetypes.toml`,
+/// the one place the real libraries the tests fetch are pinned.
+fn fixture(name: &str) -> (String, String) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archetypes.toml");
+    let text = fs::read_to_string(&path).expect("read fixtures/archetypes.toml");
+    let entry = text
+        .split("[[fixture]]")
+        .find(|entry| entry.contains(&format!("name = \"{name}\"")))
+        .unwrap_or_else(|| panic!("no fixture named `{name}`"));
+    let value = |key: &str| {
+        entry
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key} = \"")))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .unwrap_or_else(|| panic!("fixture `{name}` has no `{key}`"))
+            .to_string()
+    };
+    (value("repo"), value("rev"))
+}
+
+#[test]
+fn the_fixtures_file_gives_each_real_library_test_a_repository_and_a_full_commit() {
+    for name in ["BOSL2", "dotSCAD"] {
+        let (repo, rev) = fixture(name);
+        assert!(
+            repo.starts_with("https://") && repo.ends_with(name),
+            "{name}: {repo}"
+        );
+        assert!(
+            rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()),
+            "{name}: {rev}"
+        );
+    }
+}
+
 /// Real-ecosystem validation (#21): fetch BOSL2 at a pinned rev and render a model that
 /// `include`s it end-to-end. Requires network access and `openscad` on PATH, so it is
 /// ignored by default — run with `cargo test -- --ignored`.
@@ -3066,9 +3101,12 @@ fn env_reports_path_and_json() {
 fn bosl2_renders_end_to_end() {
     let root = TempDir::new().unwrap();
     let store = StoreHome::new();
+    let (repo, rev) = fixture("BOSL2");
     let proj = project_with(
         root.path(),
-        "[project]\nname = \"v\"\n\n[dependencies]\nBOSL2 = { git = \"https://github.com/BelfrySCAD/BOSL2\", rev = \"afe82db884ee4409aa76ecfcfbbf54d446964af1\" }\n",
+        &format!(
+            "[project]\nname = \"v\"\n\n[dependencies]\nBOSL2 = {{ git = \"{repo}\", rev = \"{rev}\" }}\n"
+        ),
     );
     fs::write(
         proj.join("model.scad"),
@@ -3101,9 +3139,12 @@ fn bosl2_renders_end_to_end() {
 fn dotscad_renders_with_root_and_on_path() {
     let root = TempDir::new().unwrap();
     let store = StoreHome::new();
+    let (repo, rev) = fixture("dotSCAD");
     let proj = project_with(
         root.path(),
-        "[project]\nname = \"v\"\n\n[dependencies.dotSCAD]\ngit = \"https://github.com/JustinSDK/dotSCAD\"\nrev = \"bb33edfd75cba0edbb7971606a077b9c69d0b7d2\"\nroot = \"src\"\non_path = true\n",
+        &format!(
+            "[project]\nname = \"v\"\n\n[dependencies.dotSCAD]\ngit = \"{repo}\"\nrev = \"{rev}\"\nroot = \"src\"\non_path = true\n"
+        ),
     );
     fs::write(
         proj.join("model.scad"),
