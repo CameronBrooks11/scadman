@@ -43,8 +43,8 @@ A git dependency:
 |---|---|---|
 | `git` | yes | The repository URL. |
 | `rev` | one of these three | An exact commit, as the full 40-character hash; an abbreviated one is refused. Never moves. |
-| `tag` | | A tag. Locked to the commit it points at; `scadman update` re-reads it. |
-| `branch` | | A branch. Locked to its tip at lock time; `scadman update` advances it. |
+| `tag` | | A tag, and only a tag: a branch of that name is refused. Locked to the commit it points at; `scadman update` re-reads it. |
+| `branch` | | A branch, and only a branch: a tag of that name is refused. Locked to its tip at lock time; `scadman update` advances it. |
 | `root` | no | Subdirectory to expose instead of the repository root. See [library-roots.md](library-roots.md). |
 | `on_path` | no | Also put the exposed directory on `OPENSCADPATH`. See [library-roots.md](library-roots.md). |
 | `submodules` | no | Also fetch the repository's git submodules. See [Submodules](#submodules). |
