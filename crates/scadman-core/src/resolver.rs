@@ -18,7 +18,7 @@ use crate::manifest::{
     Dependency, GitDependency, MANIFEST_FILE, Manifest, PathDependency, validate_commit_hash,
     validate_library_root, validate_package_name,
 };
-use crate::source::{fetch_git, remote_has};
+use crate::source::{RefKind, RefLookup, UNREACHABLE, fetch_git, look_up_ref, reachable};
 use crate::store::Store;
 
 /// Backstop against pathological depth (cycles already terminate via identity unification).
@@ -122,28 +122,37 @@ impl Fetcher for GitFetcher {
         }
         // A tag and a branch are asked for by their full names, so that each key finds
         // only its own kind and a repository with both under one name is not a guess.
-        let (asked, other) = match reference {
-            GitRef::Rev(rev) => (rev.clone(), None),
-            GitRef::Tag(tag) => (
-                format!("refs/tags/{tag}"),
-                Some(("tag", "branch", format!("refs/heads/{tag}"))),
-            ),
-            GitRef::Branch(branch) => (
-                format!("refs/heads/{branch}"),
-                Some(("branch", "tag", format!("refs/tags/{branch}"))),
-            ),
+        let named = match reference {
+            GitRef::Rev(_) => None,
+            GitRef::Tag(tag) => Some((RefKind::Tag, tag.as_str())),
+            GitRef::Branch(branch) => Some((RefKind::Branch, branch.as_str())),
+        };
+        let asked = match named {
+            Some((kind, name)) => kind.full_name(name),
+            None => reference.as_str().to_string(),
         };
         let acquired = match fetch_git(&self.store, url, &asked, submodules) {
             Ok(acquired) => acquired,
             Err(error) => {
-                let name = reference.as_str();
-                return Err(match other {
-                    // Not there under the kind that was asked for: say what is.
-                    Some((_, kind, full)) if remote_has(url, &full) => io::Error::other(format!(
-                        "`{name}` is a {kind} in this repository — write `{kind} = \"{name}\"`"
-                    )),
-                    Some((kind, _, _)) if !remote_has(url, &asked) && remote_has(url, "HEAD") => {
-                        io::Error::other(format!("this repository has no {kind} `{name}`"))
+                // Say why, where the repository can tell us: git's own message for a
+                // name it lacks, or a repository it cannot find, points the wrong way.
+                let lookup = match named {
+                    Some((kind, name)) => look_up_ref(url, kind, name),
+                    None if reachable(url) => RefLookup::Found,
+                    None => RefLookup::Unreachable,
+                };
+                return Err(match (lookup, named) {
+                    (RefLookup::OtherKind, Some((kind, name))) => {
+                        let is = kind.other().word();
+                        io::Error::other(format!(
+                            "`{name}` is a {is} in this repository — write `{is} = \"{name}\"`"
+                        ))
+                    }
+                    (RefLookup::Missing, Some((kind, name))) => {
+                        io::Error::other(format!("this repository has no {} `{name}`", kind.word()))
+                    }
+                    (RefLookup::Unreachable, _) => {
+                        io::Error::other(format!("{UNREACHABLE} (git: {error})"))
                     }
                     _ => error,
                 });

@@ -14,6 +14,17 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ### Fixed
 
+- **`add` checks a tag or branch against the repository** (#165). `scadman add … --tag
+  v99` was accepted and the mistake surfaced at `lock` as git's own message, blocking
+  every other dependency until it was fixed. `add` now refuses a name the repository
+  does not have, leaves `scadman.toml` as it was, and says when the name exists as the
+  other kind. If the repository cannot be reached the entry is added with a warning,
+  so the manifest can still be written without a network.
+- **A repository that cannot be reached is reported as that** (#58). `add` and `lock`
+  relayed git's message, which for a repository that does not exist on GitHub is a
+  request for a username, and `add` suggested passing `--branch`. Both now say the
+  repository was not found, needs authentication, or there is no network, and to check
+  the URL.
 - **A command run from a folder inside a project says where the project is** (#166).
   It suggested `scadman init`, which would have started a second project there.
 - **Names and roots that are unsafe on Windows are refused on every system** (#160). A
