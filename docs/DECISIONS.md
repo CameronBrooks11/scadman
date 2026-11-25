@@ -123,7 +123,8 @@ flagging unmet imports, the one failure mode the data shows firing today. Other
 settled choices: identity is a name bound to a canonical URL (URL authoritative);
 manifest-less transitive dependencies are declared by the user, with the
 include-scan warning; overrides deferred entirely (unknown keys in dependency
-tables are rejected, so adding per-dependency syntax later is non-breaking); branch
+tables are rejected, so a new per-dependency key never changes what an existing
+manifest means, though an older scadman refuses a library that uses one); branch
 refs allowed but
 SHA-locked; OpenSCAD's bundled MCAD is fetchable and shadowable via `OPENSCADPATH`.
 Full rationale in [resolver-direction.md](resolver-direction.md).

@@ -284,7 +284,15 @@ impl fmt::Display for ResolveError {
                 error,
             } => write!(f, "failed to fetch `{name}` ({source}): {error}"),
             ResolveError::Manifest { name, error } => {
-                write!(f, "invalid scadman.toml in dependency `{name}`: {error}")
+                write!(f, "invalid scadman.toml in dependency `{name}`: {error}")?;
+                if error.message().contains(crate::manifest::UNKNOWN_KEY) {
+                    write!(
+                        f,
+                        "`{name}` may have been written for a newer scadman than this one ({})",
+                        env!("CARGO_PKG_VERSION")
+                    )?;
+                }
+                Ok(())
             }
             ResolveError::TooDeep { name, depth } => {
                 write!(f, "dependency graph too deep (>{depth}) at `{name}`")
@@ -1025,6 +1033,43 @@ mod tests {
         let mut lock = lock_of_x_at_tag_v1();
         lock.packages[0].requested.clear();
         assert_eq!(lock_staleness(&asking_x_for("tag = \"v2\""), &lock), None);
+    }
+
+    #[test]
+    fn a_library_manifest_with_an_unknown_dependency_key_points_at_a_newer_scadman() {
+        let fetcher = FakeFetcher::new().pkg(
+            "https://h/A",
+            &[("ra", "sha_a")],
+            Some(
+                "[project]\nname = \"A\"\n[dependencies]\nX = { git = \"https://h/X\", tag = \"v1\", future_key = true }\n",
+            ),
+        );
+        let root = manifest(
+            "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"ra\" }\n",
+        );
+        let error = resolve(&root, Path::new("."), &fetcher)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("dependency `A`"), "{error}");
+        assert!(error.contains("unknown key `future_key`"), "{error}");
+        assert!(error.contains("newer scadman"), "{error}");
+    }
+
+    #[test]
+    fn a_library_manifest_broken_another_way_does_not_blame_the_scadman_version() {
+        let fetcher = FakeFetcher::new().pkg(
+            "https://h/A",
+            &[("ra", "sha_a")],
+            Some("[project]\nname = \"A\"\n[dependencies]\nX = { tag = \"v1\" }\n"),
+        );
+        let root = manifest(
+            "[project]\nname = \"p\"\n[dependencies]\nA = { git = \"https://h/A\", rev = \"ra\" }\n",
+        );
+        let error = resolve(&root, Path::new("."), &fetcher)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("needs `git` or `path`"), "{error}");
+        assert!(!error.contains("newer scadman"), "{error}");
     }
 
     #[test]

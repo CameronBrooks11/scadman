@@ -6,6 +6,17 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A mistake in a dependency table is named** (#107). A misspelled key, a table with
+  neither `git` nor `path`, one with both, and a value of the wrong type all ended in
+  `data did not match any variant of untagged enum Dependency`. Each now says what is
+  wrong: the unknown key and the keys that exist, which of `git` and `path` is needed,
+  or the key whose value has the wrong type.
+- **A library whose manifest uses a dependency key this scadman does not know says so**
+  (#155): the error names the library and the key, and that the library may need a
+  newer scadman.
+
 ### Changed
 
 - **`scadman doctor` exits 1 when the project needs fixing** (#157), so it can be a CI
