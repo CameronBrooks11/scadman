@@ -14,6 +14,9 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ### Fixed
 
+- **Output piped into a program that stops reading no longer panics** (#161).
+  `scadman doctor | head -1` printed a Rust panic message; on Linux and macOS the
+  command now ends quietly, as other command-line tools do.
 - **A mistake in a dependency table is named** (#107). A misspelled key, a table with
   neither `git` nor `path`, one with both, and a value of the wrong type all ended in
   `data did not match any variant of untagged enum Dependency`. Each now says what is
