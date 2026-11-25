@@ -14,6 +14,10 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ### Fixed
 
+- **Names and roots that are unsafe on Windows are refused on every system** (#160). A
+  dependency name such as `C:evil` or `CON`, or a `root` written with `\` or a drive
+  letter, was accepted, and on Windows could name a place outside the project
+  environment or the stored package.
 - **Output piped into a program that stops reading no longer panics** (#161).
   `scadman doctor | head -1` printed a Rust panic message; on Linux and macOS the
   command now ends quietly, as other command-line tools do.

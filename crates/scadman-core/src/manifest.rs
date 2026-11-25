@@ -189,6 +189,29 @@ pub fn validate_package_name(name: &str) -> Result<(), String> {
             "`{name}` is not a valid package name (no `/`, `\\`, NUL, `.`, or `..`)"
         ));
     }
+    // A name must be a directory name on every system the project is used on, so what
+    // Windows cannot hold is refused everywhere: a manifest valid on one is valid on all.
+    if name.contains(['<', '>', ':', '"', '|', '?', '*']) || name.chars().any(char::is_control) {
+        return Err(format!(
+            "`{name}` is not a valid package name (Windows allows none of `< > : \" | ? *` in a folder name)"
+        ));
+    }
+    if name.ends_with(['.', ' ']) {
+        return Err(format!(
+            "`{name}` is not a valid package name (Windows drops a trailing `.` or space)"
+        ));
+    }
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        stem.strip_prefix(prefix)
+            .is_some_and(|rest| matches!(rest, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
+    };
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered("COM") || numbered("LPT")
+    {
+        return Err(format!(
+            "`{name}` is not a valid package name (`{stem}` is a device on Windows)"
+        ));
+    }
     Ok(())
 }
 
@@ -213,6 +236,13 @@ pub fn validate_commit_hash(rev: &str) -> Result<(), String> {
 pub fn validate_library_root(root: &str) -> Result<(), String> {
     if root.starts_with('/') || root.contains('\0') {
         return Err(format!("library root `{root}` must be a relative path"));
+    }
+    // On Windows `\` separates directories and `C:` names a drive, so either could lead
+    // out of the package there. Refused everywhere, so a manifest means the same on all.
+    if root.contains(['\\', ':']) {
+        return Err(format!(
+            "library root `{root}` must be a relative path written with `/`"
+        ));
     }
     if root.split('/').any(|c| c == "..") {
         return Err(format!("library root `{root}` must not contain `..`"));
@@ -527,6 +557,66 @@ local-lib = { path = "../local-lib" }
         assert!(validate_package_name("Round-Anything").is_ok());
         for bad in ["", ".", "..", "../evil", "a/b", "a\\b", "x\0y"] {
             assert!(validate_package_name(bad).is_err(), "should reject `{bad}`");
+        }
+    }
+
+    #[test]
+    fn a_name_that_is_not_one_on_windows_is_refused_everywhere() {
+        // A drive-relative path, device names (bare, any case, with an extension), a
+        // character Windows forbids in a file name, and an ending Windows drops.
+        for bad in [
+            "C:evil",
+            "CON",
+            "nul",
+            "Com1",
+            "LPT9",
+            "aux.scad",
+            "a<b",
+            "a>b",
+            "a\"b",
+            "a|b",
+            "a?b",
+            "a*b",
+            "tab\there",
+            "lib.",
+            "lib ",
+        ] {
+            assert!(validate_package_name(bad).is_err(), "should reject `{bad}`");
+        }
+        // Names that only look close to those.
+        for good in [
+            "CONSOLE",
+            "com10",
+            "lpt",
+            "has space",
+            "dot.scad",
+            "BOSL2",
+            "a-b_c",
+        ] {
+            assert!(
+                validate_package_name(good).is_ok(),
+                "should accept `{good}`"
+            );
+        }
+    }
+
+    #[test]
+    fn a_root_that_leaves_the_package_on_windows_is_refused_everywhere() {
+        for bad in [
+            "..\\..\\..",
+            "src\\..\\..",
+            "C:\\lib",
+            "C:lib",
+            "\\\\host\\share",
+            "src\\lib",
+        ] {
+            assert!(validate_library_root(bad).is_err(), "should reject `{bad}`");
+        }
+        for good in [".", "src", "src/lib", "a.b/c-d"] {
+            assert!(
+                validate_library_root(good).is_ok(),
+                "should accept `{good}`"
+            );
         }
     }
 

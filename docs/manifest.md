@@ -35,7 +35,9 @@ file already gives every dependency its own `[dependencies.NAME]` section.
 Each key is the name the library is exposed under: `BOSL2` makes `include <BOSL2/…>`
 resolve. Use the name the library's own files use for themselves, since many libraries
 import their own files as `<Name/…>`. A name is a single path component: no `/` or `\`,
-and not `.` or `..`.
+and not `.` or `..`. It must also be a folder name Windows can hold, on every system, so
+that a manifest valid on one is valid on all: none of `< > : " | ? *`, no trailing `.` or
+space, and not a Windows device name such as `CON` or `NUL`.
 
 A git dependency:
 
