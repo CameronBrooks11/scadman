@@ -11,7 +11,7 @@ inputs:
     required: false
     default: "false"
   locked:
-    description: When "true", sync with `--locked`, so the step fails if scadman.lock is missing or out of date instead of writing one. Needs a scadman release newer than 0.1.0-alpha.10.
+    description: When "true", sync with `--locked`, so the step fails if scadman.lock is missing or out of date instead of writing one. Needs scadman 0.1.0-alpha.11 or newer.
     required: false
     default: "false"
   working-directory:

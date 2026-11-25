@@ -6,17 +6,38 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
-### Documentation
+## [0.1.0-alpha.11] — 2026-11-25
 
-- **Getting started shows how to declare MCAD**, which OpenSCAD stopped bundling on
-  2026-11-19, and the design records say so and give olman's state as of 2026-06-29
-  (#168).
+Eleventh alpha. Decisions about the file formats and command behaviour, made ahead of
+a beta: `--locked` uses the lockfile exactly as committed, `doctor` can gate CI, and
+`tag` and `branch` each mean one thing. Three of the changes can make a command fail where it
+passed before: `doctor` exits 1 when the project needs fixing, a `tag` that names a
+branch (or the reverse) is refused at `lock`, and a dependency name or `root` that
+Windows cannot hold is refused on every system.
 
 ### Added
 
 - **`--locked` on `sync`, `run` and `env`** (#158) uses `scadman.lock` exactly as it is:
   the command fails, and writes nothing, if the lockfile is missing or would change.
   The setup action takes `locked: "true"` to sync that way.
+
+### Changed
+
+- **A path dependency is locked by its path from the project** (#158), as
+  `source = "path:../mylib"`, where the lockfile held the absolute directory. The
+  lockfile is then the same on every checkout. An existing one is rewritten by the next
+  `sync`.
+- **`scadman doctor` exits 1 when the project needs fixing** (#157), so it can be a CI
+  or pre-commit check. That is: no `scadman.toml` or one that cannot be read, a lockfile
+  that is missing while dependencies are declared, unreadable or out of date, and a
+  locked library whose stored copy is missing or modified. A missing or older OpenSCAD,
+  an environment not built yet and a dependency that tracks a branch or tag are
+  reported and leave the exit code at 0. A library that is locked but not in the store
+  now has its own line in the report.
+- **`tag` names only a tag and `branch` only a branch** (#154). Each key used to accept
+  either kind of name, and a repository with a tag and a branch of the same name
+  resolved to whichever git preferred. A name of the other kind now fails at `lock`
+  with the key to use, and a name the repository does not have is reported as such.
 
 ### Fixed
 
@@ -49,23 +70,11 @@ All notable changes to scadman are recorded here. Format loosely follows
   (#155): the error names the library and the key, and that the library may need a
   newer scadman.
 
-### Changed
+### Documentation
 
-- **A path dependency is locked by its path from the project** (#158), as
-  `source = "path:../mylib"`, where the lockfile held the absolute directory. The
-  lockfile is then the same on every checkout. An existing one is rewritten by the next
-  `sync`.
-- **`scadman doctor` exits 1 when the project needs fixing** (#157), so it can be a CI
-  or pre-commit check. That is: no `scadman.toml` or one that cannot be read, a lockfile
-  that is missing while dependencies are declared, unreadable or out of date, and a
-  locked library whose stored copy is missing or modified. A missing or older OpenSCAD,
-  an environment not built yet and a dependency that tracks a branch or tag are
-  reported and leave the exit code at 0. A library that is locked but not in the store
-  now has its own line in the report.
-- **`tag` names only a tag and `branch` only a branch** (#154). Each key used to accept
-  either kind of name, and a repository with a tag and a branch of the same name
-  resolved to whichever git preferred. A name of the other kind now fails at `lock`
-  with the key to use, and a name the repository does not have is reported as such.
+- **Getting started shows how to declare MCAD**, which OpenSCAD stopped bundling on
+  2026-11-19, and the design records say so and give olman's state as of 2026-06-29
+  (#168).
 
 ## [0.1.0-alpha.10] — 2026-11-23
 
@@ -445,6 +454,7 @@ First public alpha. A working, project-oriented OpenSCAD dependency manager, gro
 GitHub-hosted git sources only; one version per identity; per-OS lockfile hashes; no hosted
 registry or native OpenSCAD-GUI integration yet. See the README's *Status & scope*.
 
+[0.1.0-alpha.11]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.11
 [0.1.0-alpha.10]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.10
 [0.1.0-alpha.9]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.9
 [0.1.0-alpha.8]: https://github.com/CameronBrooks11/scadman/releases/tag/v0.1.0-alpha.8

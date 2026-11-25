@@ -70,7 +70,7 @@ open a new terminal to pick it up. scadman also needs
 On another platform, build from source with a Rust toolchain (≥ 1.89):
 
 ```sh
-cargo install --locked --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha.10 scadman-cli
+cargo install --locked --git https://github.com/CameronBrooks11/scadman --tag v0.1.0-alpha.11 scadman-cli
 ```
 
 Either way, `git` needs to be on `PATH`. scadman finds OpenSCAD through `$OPENSCAD` if you
@@ -80,7 +80,7 @@ set it to the program's path, then `PATH`, and on Windows the installer's folder
 ### In GitHub Actions
 
 ```yaml
-- uses: CameronBrooks11/scadman/setup@v0.1.0-alpha.10
+- uses: CameronBrooks11/scadman/setup@v0.1.0-alpha.11
   with:
     sync: "true"
 ```
@@ -90,7 +90,7 @@ The action installs the release it is used at, checked against that release's
 `sync: "true"` it also syncs the project (`working-directory`, default `.`) and exports
 `OPENSCADPATH` for the steps after it. Pass `version:` to install another release.
 Add `locked: "true"` and the step fails when `scadman.lock` is missing or out of date,
-in place of writing one; it needs a release newer than 0.1.0-alpha.10.
+in place of writing one; it needs 0.1.0-alpha.11 or newer.
 
 GitHub lists a public project among this repository's
 [dependents](https://github.com/CameronBrooks11/scadman/network/dependents) when a file
