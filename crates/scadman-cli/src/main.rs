@@ -89,6 +89,9 @@ enum Command {
         /// lost its write protection is re-hashed.
         #[arg(long)]
         verify: bool,
+        /// Use scadman.lock exactly as it is: fail if it is missing or would change.
+        #[arg(long)]
+        locked: bool,
     },
     /// Print the project's OPENSCADPATH (point your editor/OpenSCAD at it).
     Env {
@@ -98,6 +101,9 @@ enum Command {
         /// Write the search path into .vscode/settings.json for the OpenSCAD language server.
         #[arg(long, conflicts_with = "json")]
         write_vscode: bool,
+        /// Use scadman.lock exactly as it is: fail if it is missing or would change.
+        #[arg(long)]
+        locked: bool,
     },
     /// Report on the project setup (OpenSCAD, store, manifest, lock, environment).
     Doctor,
@@ -109,6 +115,10 @@ enum Command {
     },
     /// Sync, then run OpenSCAD with the project environment on OPENSCADPATH.
     Run {
+        /// Use scadman.lock exactly as it is: fail if it is missing or would change.
+        /// Give it before the OpenSCAD arguments.
+        #[arg(long)]
+        locked: bool,
         /// Arguments passed through to openscad (e.g. the .scad file).
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -133,8 +143,12 @@ fn main() -> Result<()> {
         Command::List => list_cmd(),
         Command::Lock => lock_cmd(),
         Command::Update { names } => update_cmd(names),
-        Command::Sync { verify } => sync_cmd(verify).map(|_| ()),
-        Command::Env { json, write_vscode } => env_cmd(json, write_vscode),
+        Command::Sync { verify, locked } => sync_cmd(verify, locked).map(|_| ()),
+        Command::Env {
+            json,
+            write_vscode,
+            locked,
+        } => env_cmd(json, write_vscode, locked),
         Command::Doctor => {
             if !doctor_cmd()? {
                 std::process::exit(1);
@@ -142,8 +156,8 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Graph { json } => graph_cmd(json),
-        Command::Run { args } => {
-            let code = run_cmd(args).unwrap_or_else(|error| {
+        Command::Run { locked, args } => {
+            let code = run_cmd(args, locked).unwrap_or_else(|error| {
                 eprintln!("Error: {error:?}");
                 RUN_FAILED_BEFORE_OPENSCAD
             });
@@ -256,9 +270,9 @@ fn short(rev: &str) -> &str {
     &rev[..rev.len().min(12)]
 }
 
-fn env_cmd(json: bool, write_vscode: bool) -> Result<()> {
+fn env_cmd(json: bool, write_vscode: bool, locked: bool) -> Result<()> {
     let store = open_store()?;
-    let (lock, env) = prepare_environment(&store, false)?;
+    let (lock, env) = prepare_environment(&store, false, locked)?;
     let openscadpath = env
         .openscad_path_value()
         .context("assemble OPENSCADPATH")?
@@ -1121,8 +1135,12 @@ fn report_update(previous: Option<&Lockfile>, updated: &Lockfile) {
 /// Resolve-or-read the lock, ensure content is stored, build the environment, and warn
 /// about undeclared imports (to stderr). Prints nothing to stdout, so `env` can emit only
 /// its report.
-fn prepare_environment(store: &Store, verify: bool) -> Result<(Lockfile, Environment)> {
-    let lock = read_or_lock(store, verify)?;
+fn prepare_environment(
+    store: &Store,
+    verify: bool,
+    locked: bool,
+) -> Result<(Lockfile, Environment)> {
+    let lock = read_or_lock(store, verify, locked)?;
     ensure_stored(&lock, store, verify)?;
     let env = build_environment(&lock, store, &env_root()?).context("build environment")?;
     warn_unmet_imports(&lock, &env);
@@ -1163,9 +1181,9 @@ fn warn_on_path_collisions(env: &Environment) {
     }
 }
 
-fn sync_cmd(verify: bool) -> Result<Environment> {
+fn sync_cmd(verify: bool, locked: bool) -> Result<Environment> {
     let store = open_store()?;
-    let (lock, env) = prepare_environment(&store, verify)?;
+    let (lock, env) = prepare_environment(&store, verify, locked)?;
     warn_unfetched_submodules(&lock, &store);
     let n = env.exposed.len();
     println!(
@@ -1178,10 +1196,10 @@ fn sync_cmd(verify: bool) -> Result<Environment> {
 
 /// Run OpenSCAD with the project environment and return the code to exit with: the one
 /// OpenSCAD ended with.
-fn run_cmd(args: Vec<String>) -> Result<i32> {
+fn run_cmd(args: Vec<String>, locked: bool) -> Result<i32> {
     let store = open_store()?;
     warn_openscad_too_old();
-    let (_, env) = prepare_environment(&store, false)?;
+    let (_, env) = prepare_environment(&store, false, locked)?;
     // Point OPENSCADPATH at the project env (plus any on_path library roots) so declared
     // dependencies shadow globals. (OpenSCAD still searches its built-in user/install
     // dirs — the include-scan surfaces undeclared imports.)
@@ -1391,7 +1409,10 @@ fn holds_reference(reference: &GitRef, package: &lockfile::LockedPackage) -> boo
     }
 }
 
-fn read_or_lock(store: &Store, verify: bool) -> Result<Lockfile> {
+/// The lockfile to build from. It is created when missing, and rewritten when a path
+/// dependency's directory has changed, unless `locked` forbids writing it: then either
+/// is an error and nothing is written.
+fn read_or_lock(store: &Store, verify: bool, locked: bool) -> Result<Lockfile> {
     let manifest = load_manifest()?;
     if Path::new(lockfile::LOCKFILE_FILE).exists() {
         let text = fs::read_to_string(lockfile::LOCKFILE_FILE)?;
@@ -1421,6 +1442,19 @@ fn read_or_lock(store: &Store, verify: bool) -> Result<Lockfile> {
                 .to_lockfile();
             warn_restored_by(&fetcher.inner, &refreshed);
             if refreshed != lock {
+                if locked {
+                    let changed: Vec<String> = refreshed
+                        .packages
+                        .iter()
+                        .filter(|package| !lock.packages.contains(package))
+                        .map(|package| format!("`{}`", package.name))
+                        .collect();
+                    bail!(
+                        "{} would change ({} no longer matches it) and --locked forbids writing it. Run `scadman sync` without --locked, and commit the result.",
+                        lockfile::LOCKFILE_FILE,
+                        changed.join(", ")
+                    );
+                }
                 write_lock(&refreshed)?;
             }
             return Ok(refreshed);
@@ -1433,6 +1467,12 @@ fn read_or_lock(store: &Store, verify: bool) -> Result<Lockfile> {
             );
         }
         return Ok(lock);
+    }
+    if locked {
+        bail!(
+            "{} is missing and --locked forbids writing it. Run `scadman lock`, and commit the result.",
+            lockfile::LOCKFILE_FILE
+        );
     }
     let lock = resolve_lock(&manifest, store)?;
     write_lock(&lock)?;

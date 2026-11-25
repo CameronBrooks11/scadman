@@ -541,6 +541,9 @@ impl Resolution<'_> {
             },
         }
 
+        // What the lockfile records as the source, where that is not the identity.
+        let mut recorded = None;
+
         // Identity (the "one version per identity" key and lockfile source), exposure knobs,
         // and how to acquire it, per dependency kind.
         let (identity, root, on_path, input) = match dep {
@@ -580,6 +583,10 @@ impl Resolution<'_> {
                 }
                 let dir = self.resolve_path_dep(name, p)?;
                 let identity = format!("{PATH_SOURCE_PREFIX}{}", dir.display());
+                // The lockfile names the directory from the project, so that it reads
+                // the same on every checkout.
+                recorded = relative_to(self.base, &dir)
+                    .map(|relative| format!("{PATH_SOURCE_PREFIX}{relative}"));
                 (
                     identity,
                     p.root.clone().unwrap_or_else(|| ".".to_string()),
@@ -676,7 +683,7 @@ impl Resolution<'_> {
             identity.clone(),
             Resolved {
                 name: name.to_string(),
-                source: identity,
+                source: recorded.unwrap_or(identity),
                 rev: fetched.rev,
                 hash: fetched.hash,
                 dependencies: dep_names,
@@ -757,6 +764,41 @@ fn read_manifest_deps(
         error,
     })?;
     Ok(manifest.dependencies)
+}
+
+/// `dir` as a path from `base`, written with `/` whatever the platform: `../sib`,
+/// `vendor/lib`, or `.` for `base` itself. `None` when there is no such path, as between
+/// two Windows drives, or when `base` cannot be resolved.
+fn relative_to(base: &Path, dir: &Path) -> Option<String> {
+    use std::path::Component;
+    let base = base.canonicalize().ok()?;
+    let mut from = base.components().peekable();
+    let mut to = dir.components().peekable();
+    // Both are absolute: they must share at least their root.
+    let mut shared = 0;
+    while let (Some(a), Some(b)) = (from.peek(), to.peek()) {
+        if a != b {
+            break;
+        }
+        shared += 1;
+        from.next();
+        to.next();
+    }
+    if shared == 0 {
+        return None;
+    }
+    let mut parts: Vec<String> = from.map(|_| "..".to_string()).collect();
+    for component in to {
+        match component {
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+            _ => return None,
+        }
+    }
+    Some(if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
+    })
 }
 
 fn chain(via: &[String], name: &str) -> Vec<String> {
@@ -1070,6 +1112,21 @@ mod tests {
             .to_string();
         assert!(error.contains("needs `git` or `path`"), "{error}");
         assert!(!error.contains("newer scadman"), "{error}");
+    }
+
+    #[test]
+    fn a_directory_is_written_from_the_base_with_forward_slashes() {
+        let root = TempDir::new().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let base = root.join("work").join("app");
+        std::fs::create_dir_all(base.join("vendor").join("lib")).unwrap();
+        std::fs::create_dir_all(root.join("libs").join("sib")).unwrap();
+
+        let from_base = |dir: PathBuf| relative_to(&base, &dir).unwrap();
+        assert_eq!(from_base(base.clone()), ".");
+        assert_eq!(from_base(base.join("vendor").join("lib")), "vendor/lib");
+        assert_eq!(from_base(root.join("work")), "..");
+        assert_eq!(from_base(root.join("libs").join("sib")), "../../libs/sib");
     }
 
     #[test]

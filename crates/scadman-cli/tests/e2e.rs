@@ -2022,6 +2022,150 @@ fn doctor_only_reports_what_does_not_need_fixing() {
     assert_eq!(out.status.code(), Some(0), "{report}");
 }
 
+/// A project `app` with a path dependency on its sibling `sib`, under `root`.
+fn project_with_a_sibling(root: &Path) -> (PathBuf, PathBuf) {
+    let sib = root.join("sib");
+    fs::create_dir_all(&sib).unwrap();
+    fs::write(sib.join("s.scad"), "// s\n").unwrap();
+    let proj = root.join("app");
+    fs::create_dir_all(&proj).unwrap();
+    fs::write(
+        proj.join("scadman.toml"),
+        "[project]\nname = \"app\"\n\n[dependencies]\nmysib = { path = \"../sib\" }\n",
+    )
+    .unwrap();
+    (proj, sib)
+}
+
+#[test]
+fn locked_refuses_to_create_a_lockfile() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (lib, rev) = make_lib(root.path());
+    let proj = project_asking(root.path(), &lib, &format!("rev = \"{rev}\""));
+
+    for command in ["sync", "env"] {
+        let out = scadman(&proj, store.path(), &[command, "--locked"]);
+        assert!(!out.status.success(), "{command} --locked made a lockfile");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("scadman.lock is missing") && stderr.contains("--locked"),
+            "{command}: {stderr}"
+        );
+        assert!(!proj.join("scadman.lock").exists(), "{command}");
+    }
+}
+
+#[test]
+fn locked_uses_a_current_lockfile_as_it_is() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _, _) = synced_project(root.path(), &store);
+    let before = fs::read(proj.join("scadman.lock")).unwrap();
+
+    // On a machine that has nothing stored yet, as in CI.
+    let fresh = StoreHome::new();
+    for command in ["sync", "env"] {
+        let out = scadman(&proj, fresh.path(), &[command, "--locked"]);
+        assert!(
+            out.status.success(),
+            "{command}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert_eq!(fs::read(proj.join("scadman.lock")).unwrap(), before);
+    let via_env = proj.join(".scadman/env/mylib/greet.scad");
+    assert_eq!(fs::read_to_string(via_env).unwrap(), GREET);
+}
+
+#[cfg(unix)]
+#[test]
+fn run_takes_locked_before_the_openscad_arguments() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let fake = root.path().join("my-openscad");
+    fs::write(&fake, "#!/bin/sh\necho \"$@\" > \"$0.args\"\n").unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let run = |proj: &Path, args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_scadman"))
+            .current_dir(proj)
+            .env("XDG_DATA_HOME", store.path())
+            .env("OPENSCAD", &fake)
+            .args(args)
+            .output()
+            .expect("run scadman")
+    };
+
+    let (proj, _, _) = synced_project(root.path(), &store);
+    let out = run(
+        &proj,
+        &["run", "--locked", "--", "demo.scad", "-o", "out.stl"],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The flag is scadman's; OpenSCAD gets only its own arguments.
+    let args = fs::read_to_string(root.path().join("my-openscad.args")).unwrap();
+    assert_eq!(args.trim(), "demo.scad -o out.stl");
+
+    // With nothing locked, OpenSCAD is never started.
+    fs::remove_file(root.path().join("my-openscad.args")).unwrap();
+    fs::remove_file(proj.join("scadman.lock")).unwrap();
+    let out = run(&proj, &["run", "--locked", "--", "demo.scad"]);
+    assert_eq!(out.status.code(), Some(125));
+    assert!(!root.path().join("my-openscad.args").exists());
+    assert!(!proj.join("scadman.lock").exists());
+}
+
+#[test]
+fn a_path_dependency_is_locked_relative_to_the_project() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, _) = project_with_a_sibling(root.path());
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    let lock = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    assert!(lock.contains("source = \"path:../sib\""), "{lock}");
+
+    // The same project checked out somewhere else locks to the same file, so `--locked`
+    // passes there.
+    let elsewhere = TempDir::new().unwrap();
+    let (copy, _) = project_with_a_sibling(elsewhere.path());
+    fs::copy(proj.join("scadman.lock"), copy.join("scadman.lock")).unwrap();
+    let out = scadman(&copy, store.path(), &["env", "--locked"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(fs::read_to_string(copy.join("scadman.lock")).unwrap(), lock);
+}
+
+#[test]
+fn locked_refuses_a_path_dependency_whose_content_has_changed() {
+    let root = TempDir::new().unwrap();
+    let store = StoreHome::new();
+    let (proj, sib) = project_with_a_sibling(root.path());
+    assert!(scadman(&proj, store.path(), &["lock"]).status.success());
+    let lock = fs::read_to_string(proj.join("scadman.lock")).unwrap();
+    fs::write(sib.join("s.scad"), "// changed\n").unwrap();
+
+    let out = scadman(&proj, store.path(), &["sync", "--locked"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("`mysib`") && stderr.contains("--locked"),
+        "{stderr}"
+    );
+    assert_eq!(fs::read_to_string(proj.join("scadman.lock")).unwrap(), lock);
+
+    // Without the flag the lockfile follows the directory, as before.
+    assert!(scadman(&proj, store.path(), &["sync"]).status.success());
+    assert_ne!(fs::read_to_string(proj.join("scadman.lock")).unwrap(), lock);
+}
+
 #[test]
 fn sync_rejects_a_stale_lockfile() {
     let root = TempDir::new().unwrap();

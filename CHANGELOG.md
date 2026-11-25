@@ -6,6 +6,12 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- **`--locked` on `sync`, `run` and `env`** (#158) uses `scadman.lock` exactly as it is:
+  the command fails, and writes nothing, if the lockfile is missing or would change.
+  The setup action takes `locked: "true"` to sync that way.
+
 ### Fixed
 
 - **A mistake in a dependency table is named** (#107). A misspelled key, a table with
@@ -19,6 +25,10 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ### Changed
 
+- **A path dependency is locked by its path from the project** (#158), as
+  `source = "path:../mylib"`, where the lockfile held the absolute directory. The
+  lockfile is then the same on every checkout. An existing one is rewritten by the next
+  `sync`.
 - **`scadman doctor` exits 1 when the project needs fixing** (#157), so it can be a CI
   or pre-commit check. That is: no `scadman.toml` or one that cannot be read, a lockfile
   that is missing while dependencies are declared, unreadable or out of date, and a

@@ -74,6 +74,8 @@ The action installs the release it is used at, checked against that release's
 `checksums.txt`, on Linux, macOS or Windows runners, and puts `scadman` on `PATH`. With
 `sync: "true"` it also syncs the project (`working-directory`, default `.`) and exports
 `OPENSCADPATH` for the steps after it. Pass `version:` to install another release.
+Add `locked: "true"` and the step fails when `scadman.lock` is missing or out of date,
+in place of writing one; it needs a release newer than 0.1.0-alpha.10.
 
 GitHub lists a public project among the scadman repository's
 [dependents](https://github.com/CameronBrooks11/scadman/network/dependents) when a file
@@ -112,9 +114,9 @@ lives.
 | `scadman list` | Show declared dependencies and the commit each is locked to. |
 | `scadman lock` | Bring `scadman.lock` into line with the manifest: resolve what was added or changed, drop what was removed, and keep every other commit where it is locked. |
 | `scadman update [name…]` | Move branch and tag dependencies to their newest commit, all or just the named ones, and report what moved. |
-| `scadman sync [--verify]` | Build the project environment from the lockfile and warn about undeclared imports and unfetched submodules. `--verify` re-hashes every stored library first and restores any that was modified. |
-| `scadman run -- <openscad args>` | Sync, then run OpenSCAD with the environment on `OPENSCADPATH`. |
-| `scadman env [--json \| --write-vscode]` | Sync, then print the `OPENSCADPATH` for editors and tools. |
+| `scadman sync [--verify] [--locked]` | Build the project environment from the lockfile and warn about undeclared imports and unfetched submodules. `--verify` re-hashes every stored library first and restores any that was modified. |
+| `scadman run [--locked] -- <openscad args>` | Sync, then run OpenSCAD with the environment on `OPENSCADPATH`. |
+| `scadman env [--json \| --write-vscode] [--locked]` | Sync, then print the `OPENSCADPATH` for editors and tools. |
 | `scadman graph [--json]` | Print the locked dependency graph. |
 | `scadman doctor` | Report on OpenSCAD, the store, the manifest, the lockfile, whether the stored libraries are present and unmodified, and the environment. Exits 1 when the project needs fixing. |
 
@@ -123,6 +125,11 @@ lives.
 dependency it cannot fetch, no OpenSCAD found) it prints the error and exits 125. Every
 other command exits 0 on success and 1 on failure; a mistake in the command line itself
 exits 2.
+
+`sync`, `run` and `env` write `scadman.lock` when it is missing, and rewrite it when a
+path dependency's directory has changed. With `--locked` they use the lockfile exactly as
+it is, and fail without writing anything if it is missing or would change. That is the
+form for CI, where the build should use what was committed.
 
 `scadman doctor` always prints its whole report. It exits 1 when something in the
 project needs fixing: `scadman.toml` is missing or cannot be read, the lockfile is
