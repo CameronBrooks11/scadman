@@ -14,6 +14,8 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ### Fixed
 
+- **A command run from a folder inside a project says where the project is** (#166).
+  It suggested `scadman init`, which would have started a second project there.
 - **Names and roots that are unsafe on Windows are refused on every system** (#160). A
   dependency name such as `C:evil` or `CON`, or a `root` written with `\` or a drive
   letter, was accepted, and on Windows could name a place outside the project
