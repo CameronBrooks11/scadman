@@ -6,6 +6,12 @@ All notable changes to scadman are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Documentation
+
+- **Getting started shows how to declare MCAD**, which OpenSCAD stopped bundling on
+  2026-11-19, and the design records say so and give olman's state as of 2026-06-29
+  (#168).
+
 ### Added
 
 - **`--locked` on `sync`, `run` and `env`** (#158) uses `scadman.lock` exactly as it is:
